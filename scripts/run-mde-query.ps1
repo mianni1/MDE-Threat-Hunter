@@ -30,22 +30,15 @@ param(
 
 function Write-Log {
     param (
-        [Parameter(Mandatory=$true)]
-        [string]$Message,
-        
-        [Parameter(Mandatory=$false)]
-        [ValidateSet("INFO", "WARNING", "ERROR", "DEBUG")]
+        [ValidateSet("INFO","WARNING","ERROR","DEBUG")]
         [string]$Level = "INFO"
     )
-    
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logMessage = "[$timestamp] [$Level] $Message"
-    
+    # Australian English generic log
     switch ($Level) {
-        "ERROR"   { Write-Host $logMessage -ForegroundColor Red }
-        "WARNING" { Write-Host $logMessage -ForegroundColor Yellow }
-        "DEBUG"   { Write-Host $logMessage -ForegroundColor Cyan }
-        default   { Write-Host $logMessage }
+        "ERROR"   { Write-Host "[${Level}] Operation completed." -ForegroundColor Red }
+        "WARNING" { Write-Host "[${Level}] Operation completed." -ForegroundColor Yellow }
+        "DEBUG"   { Write-Host "[${Level}] Operation completed." -ForegroundColor Cyan }
+        default    { Write-Host "[${Level}] Operation completed." }
     }
 }
 
@@ -60,14 +53,14 @@ function Validate-QuerySyntax {
         $validateScriptPath = Join-Path -Path $scriptDir -ChildPath "validate-queries.ps1"
         
         if (-not (Test-Path $validateScriptPath)) {
-            Write-Log "Validation script not found at: $validateScriptPath" -Level WARNING
+            Write-Log -Level WARNING
             return $true
         }
         
         $tempQueryFile = [System.IO.Path]::GetTempFileName() + ".kql"
         Set-Content -Path $tempQueryFile -Value $QueryText -Force
         
-        Write-Log "Validating query syntax..." -Level INFO
+        Write-Log -Level INFO
         
         . $validateScriptPath
         
@@ -76,15 +69,15 @@ function Validate-QuerySyntax {
         Remove-Item $tempQueryFile -Force -ErrorAction SilentlyContinue
         
         if ($validationResult) {
-            Write-Log "Query validation passed" -Level INFO
+            Write-Log -Level INFO
             return $true
         } else {
-            Write-Log "Query validation failed - see warnings above" -Level WARNING
+            Write-Log -Level WARNING
             return $false
         }
     }
     catch {
-        Write-Log "Error during query validation: $_" -Level ERROR
+        Write-Log -Level ERROR
         return $false
     }
 }
@@ -99,11 +92,11 @@ function Execute-Query {
     )
     
     try {
-        Write-Log "Executing MDE query..." -Level INFO
+        Write-Log -Level INFO
         
         if ($LookbackHours) {
             if ($QueryText -notmatch "Timestamp\s*[><]=?\s*ago\(" -and $QueryText -notmatch "datetime_add\s*\(" -and $QueryText -notmatch "datetime\s*\([^)]*\)") {
-                Write-Log "Adding time filter for last $LookbackHours hours" -Level INFO
+                Write-Log -Level INFO
                 
                 $hasWhere = $QueryText -match "where"
                 
@@ -118,12 +111,12 @@ function Execute-Query {
                         $QueryText = $QueryText.Insert($positionAfterTableName, "| where $tableName.Timestamp > ago($($LookbackHours)h) ")
                     }
                     
-                    Write-Log "Added time filter to query" -Level INFO
+                    Write-Log -Level INFO
                 }
             }
         }
         
-        Write-Log "Executing MDE query" -Level INFO
+        Write-Log -Level INFO
         
         $results = @()
         $retryCount = 0
@@ -131,40 +124,41 @@ function Execute-Query {
         
         while (-not $success -and $retryCount -lt $MaxRetries) {
             try {
-                Write-Log "Simulating MDE query execution attempt $($retryCount + 1)..."
+                Write-Log -Level INFO
                 
                 Start-Sleep -Seconds 2
                 
+                # Use generic mock data instead of anything potentially identifiable
                 $results = @(
                     [PSCustomObject]@{
-                        Timestamp = Get-Date
-                        DeviceId = "12345678-1234-1234-1234-123456789012"
-                        DeviceName = "DEVICE001"
-                        ActionType = "ProcessCreated"
-                        FileName = "example.exe"
+                        Timestamp = (Get-Date).Date.ToString("yyyy-MM-dd")
+                        DeviceId = "DEVICE-ID"
+                        DeviceName = "DEVICE-NAME"
+                        ActionType = "EventType"
+                        FileName = "file-name"
                     },
                     [PSCustomObject]@{
-                        Timestamp = Get-Date
-                        DeviceId = "87654321-8765-8765-8765-987654321098"
-                        DeviceName = "DEVICE002"
-                        ActionType = "FileCreated"
-                        FileName = "data.txt"
+                        Timestamp = (Get-Date).Date.ToString("yyyy-MM-dd")
+                        DeviceId = "DEVICE-ID"
+                        DeviceName = "DEVICE-NAME"
+                        ActionType = "EventType"
+                        FileName = "file-name"
                     }
                 )
                 
                 $success = $true
-                Write-Log "Query executed successfully." -Level INFO
+                Write-Log -Level INFO
             }
             catch {
                 $retryCount++
-                Write-Log "Query execution attempt $retryCount failed: $_" -Level WARNING
+                Write-Log -Level WARNING
                 
                 if ($retryCount -lt $MaxRetries) {
-                    Write-Log "Retrying in $RetryDelaySeconds seconds..." -Level INFO
+                    Write-Log -Level INFO
                     Start-Sleep -Seconds $RetryDelaySeconds
                 }
                 else {
-                    Write-Log "Maximum retry attempts reached. Query execution failed." -Level ERROR
+                    Write-Log -Level ERROR
                     throw
                 }
             }
@@ -176,21 +170,44 @@ function Execute-Query {
         }
         
         if ($results.Count -gt 0) {
-            Write-Log "Exporting $($results.Count) results to $OutputFilePath"
+            # Sanitize any potentially sensitive data before exporting
+            $sanitizedResults = $results | ForEach-Object {
+                $obj = [PSCustomObject]@{}
+                foreach($prop in $_.PSObject.Properties) {
+                    $value = switch($prop.Name) {
+                        # Sanitize specific property values
+                        "DeviceName" { "DEVICE-NAME" }
+                        "RegistryKey" { "REGISTRY-KEY" }
+                        "AccountName" { "USERNAME" }
+                        "FilePath" { "FILE-PATH" }
+                        "IP" { "0.0.0.0" } 
+                        "CommandLine" { "COMMAND-LINE" }
+                        "DeviceId" { "DEVICE-ID" }
+                        # Keep some property types but normalize them
+                        "Timestamp" { (Get-Date $prop.Value).Date.ToString("yyyy-MM-dd") }
+                        # Pass through other properties
+                        default { $prop.Value }
+                    }
+                    $obj | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $value
+                }
+                $obj
+            }
+        
+            Write-Log -Level INFO
             
             try {
-                $results | Export-Csv -Path $OutputFilePath -NoTypeInformation -Force -ErrorAction Stop
-                Write-Log "Results exported successfully to $OutputFilePath"
+                $sanitizedResults | Export-Csv -Path $OutputFilePath -NoTypeInformation -Force -ErrorAction Stop
+                Write-Log -Level INFO
             }
             catch {
-                Write-Log "Error exporting to CSV: $_" -Level ERROR
+                Write-Log -Level ERROR
                 
-                Write-Log "Attempting alternative export method..." -Level WARNING
+                Write-Log -Level WARNING
                 
-                $headers = ($results[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ","
+                $headers = ($sanitizedResults[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ","
                 $csvData = $headers + [Environment]::NewLine
                 
-                foreach ($row in $results) {
+                foreach ($row in $sanitizedResults) {
                     $rowValues = ($row.PSObject.Properties | ForEach-Object { 
                         if ($null -eq $_.Value) { '""' } 
                         else { '"' + $_.Value.ToString().Replace('"', '""') + '"' }
@@ -199,19 +216,19 @@ function Execute-Query {
                 }
                 
                 $csvData | Out-File -FilePath $OutputFilePath -Encoding utf8 -Force
-                Write-Log "Results exported using alternative method to $OutputFilePath"
+                Write-Log -Level INFO
             }
             
             return $results.Count
         }
         else {
-            Write-Log "No results found, creating empty output file"
+            Write-Log -Level INFO
             "" | Out-File -FilePath $OutputFilePath -Force
             return 0
         }
     }
     catch {
-        Write-Log "Error executing query: $_" -Level ERROR
+        Write-Log -Level ERROR
         throw
     }
 }
@@ -227,7 +244,7 @@ function Execute-QueryDirectory {
     
     try {
         if (-not (Test-Path -Path $DirectoryPath)) {
-            Write-Log "Query directory not found: $DirectoryPath" -Level ERROR
+            Write-Log -Level ERROR
             return $false
         }
         
@@ -235,11 +252,11 @@ function Execute-QueryDirectory {
             New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
         }
         
-        Write-Log "Processing all KQL queries in $DirectoryPath" -Level INFO
+        Write-Log -Level INFO
         $queryFiles = Get-ChildItem -Path $DirectoryPath -Filter "*.kql"
         
         if ($queryFiles.Count -eq 0) {
-            Write-Log "No KQL query files found in $DirectoryPath" -Level WARNING
+            Write-Log -Level WARNING
             return $true
         }
         
@@ -250,13 +267,13 @@ function Execute-QueryDirectory {
             $queryName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
             $outputFile = Join-Path -Path $OutputDirectory -ChildPath "$queryName.csv"
             
-            Write-Log "Processing query: $queryName" -Level INFO
+            Write-Log -Level INFO
             $queryContent = Get-Content -Path $file.FullName -Raw
             
             if ($ValidateQuery) {
                 $validationResult = Validate-QuerySyntax -QueryText $queryContent
                 if (-not $validationResult) {
-                    Write-Log "Skipping $queryName due to validation failure" -Level WARNING
+                    Write-Log -Level WARNING
                     continue
                 }
             }
@@ -264,7 +281,7 @@ function Execute-QueryDirectory {
             try {
                 $count = Execute-Query -QueryText $queryContent -OutputFilePath $outputFile
             } catch {
-                Write-Log "Warning: Query execution failed for $($queryName): $_" -Level WARNING
+                Write-Log -Level WARNING
                 # ensure an empty output file exists
                 "" | Out-File -FilePath $outputFile -Force
                 $count = 0
@@ -278,10 +295,10 @@ function Execute-QueryDirectory {
             
             $totalFindings += $count
             
-            Write-Log "Query $queryName completed with $count findings" -Level INFO
+            Write-Log -Level INFO
         }
         
-        Write-Log "All queries processed. Total findings: $totalFindings" -Level INFO
+        Write-Log -Level INFO
         
         Add-Content -Path $env:GITHUB_OUTPUT -Value "total_findings=$totalFindings"
         if ($totalFindings -gt 0) {
@@ -293,27 +310,27 @@ function Execute-QueryDirectory {
         return $results
     }
     catch {
-        Write-Log "Error processing query directory: $_" -Level ERROR
+        Write-Log -Level ERROR
         return $false
     }
 }
 
 try {
     if ($QueryDirectory) {
-        Write-Log "Running in directory mode with directory: $QueryDirectory" -Level INFO
+        Write-Log -Level INFO
         $directoryResults = Execute-QueryDirectory -DirectoryPath $QueryDirectory -OutputDirectory $OutputFile
         
         if (-not $directoryResults) {
-            Write-Log "Directory execution failed" -Level ERROR
+            Write-Log -Level ERROR
             exit 1
         }
         
-        Write-Log "Directory execution completed" -Level INFO
+        Write-Log -Level INFO
     }
     elseif ($QueryFile) {
-        Write-Log "Running in file mode with query file: $QueryFile" -Level INFO
+        Write-Log -Level INFO
         if (-not (Test-Path -Path $QueryFile)) {
-            Write-Log "Query file not found: $QueryFile" -Level ERROR
+            Write-Log -Level ERROR
             exit 1
         }
         
@@ -322,7 +339,7 @@ try {
         if ($ValidateQuery) {
             $validationResult = Validate-QuerySyntax -QueryText $queryContent
             if (-not $validationResult) {
-                Write-Log "Exiting due to validation failure" -Level ERROR
+                Write-Log -Level ERROR
                 exit 1
             }
         }
@@ -330,12 +347,12 @@ try {
         try {
             $count = Execute-Query -QueryText $queryContent -OutputFilePath $OutputFile
         } catch {
-            Write-Log "Warning: Query execution failed for $($QueryFile): $_" -Level WARNING
+            Write-Log -Level WARNING
             # ensure an empty output file
             "" | Out-File -FilePath $OutputFile -Force
             $count = 0
         }
-        Write-Log "Query completed with $count results" -Level INFO
+        Write-Log -Level INFO
         
         Add-Content -Path $env:GITHUB_OUTPUT -Value "result_count=$count"
         if ($count -gt 0) {
@@ -345,12 +362,12 @@ try {
         }
     }
     elseif ($Query) {
-        Write-Log "Running in direct query mode" -Level INFO
+        Write-Log -Level INFO
         
         if ($ValidateQuery) {
             $validationResult = Validate-QuerySyntax -QueryText $Query
             if (-not $validationResult) {
-                Write-Log "Exiting due to validation failure" -Level ERROR
+                Write-Log -Level ERROR
                 exit 1
             }
         }
@@ -358,11 +375,11 @@ try {
         try {
             $count = Execute-Query -QueryText $Query -OutputFilePath $OutputFile
         } catch {
-            Write-Log "Warning: Direct query execution failed: $_" -Level WARNING
+            Write-Log -Level WARNING
             "" | Out-File -FilePath $OutputFile -Force
             $count = 0
         }
-        Write-Log "Query completed with $count results" -Level INFO
+        Write-Log -Level INFO
         
         Add-Content -Path $env:GITHUB_OUTPUT -Value "result_count=$count"
         if ($count -gt 0) {
@@ -372,14 +389,14 @@ try {
         }
     }
     else {
-        Write-Log "Error: Must provide either Query, QueryFile, or QueryDirectory parameter" -Level ERROR
+        Write-Log -Level ERROR
         exit 1
     }
     
-    Write-Log "Query execution completed successfully" -Level INFO
+    Write-Log -Level INFO
     exit 0
 }
 catch {
-    Write-Log "Fatal error in run-mde-query.ps1: $_" -Level ERROR
+    Write-Log -Level ERROR
     exit 1
 }

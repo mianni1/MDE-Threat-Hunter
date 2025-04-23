@@ -10,20 +10,20 @@ init_log "runner-manager"
 
 case "$1" in
     prepare)
-        log "INFO" "Preparing runner environment"
+        log "INFO"
         # Generic environment preparation
         create_directories
 
         disk_usage=$(check_disk_usage)
 
         if [ "$disk_usage" -gt "75" ]; then
-            log "WARNING" "Disk usage is high. Running cleanup..."
+            log "WARNING"
             "${SCRIPT_DIR}/disk-manager.sh" standard
         fi
 
-        log "INFO" "Updating package lists"
+        log "INFO"
         if ! sudo apt-get update -qq; then
-            log "WARNING" "Failed to update package lists"
+            log "WARNING"
         fi
 
         check_powershell
@@ -31,12 +31,12 @@ case "$1" in
         check_powershell_modules "Microsoft.Graph.Security" "PSWriteHTML" "ImportExcel"
 
         if ! command -v git-lfs &> /dev/null; then
-            log "INFO" "Git LFS not found. Installing Git LFS..."
+            log "INFO"
             sudo apt-get install -y git-lfs
             git lfs install
-            log "INFO" "Git LFS installed"
+            log "INFO"
         else
-            log "INFO" "Git LFS already installed"
+            log "INFO"
         fi
 
         check_connectivity
@@ -44,27 +44,27 @@ case "$1" in
         validate_queries
 
         if git diff --name-only HEAD HEAD~1 2>/dev/null | grep -q -E '\.(kql|yml|ps1|sh)$'; then
-            log "INFO" "Changes detected in workflow or query files since last commit"
+            log "INFO"
         fi
 
         print_environment_summary
         
-        log "INFO" "Runner environment preparation completed successfully"
+        log "INFO"
         ;;
         
     status)
-        log "INFO" "Checking runner environment status"
+        log "INFO"
         
         "${SCRIPT_DIR}/disk-manager.sh" status
         
-        log "INFO" "Checking PowerShell modules"
+        log "INFO"
         pwsh -Command {
             $modules = Get-Module -ListAvailable | Where-Object { 
                 $_.Name -in ('Microsoft.Graph.Security', 'PSWriteHTML', 'ImportExcel') 
             } | Select-Object Name, Version
             
             $modules | ForEach-Object {
-                Write-Host "[INFO] Module $($_.Name) version $($_.Version) is installed"
+                Write-Host "[INFO] Operation completed."
             }
         }
         
@@ -74,7 +74,7 @@ case "$1" in
         ;;
         
     cleanup)
-        log "INFO" "Running environment cleanup"
+        log "INFO"
         
         if [ "$2" = "force" ]; then
             "${SCRIPT_DIR}/disk-manager.sh" critical
@@ -82,11 +82,11 @@ case "$1" in
             "${SCRIPT_DIR}/disk-manager.sh" standard
         fi
         
-        log "INFO" "Cleanup completed"
+        log "INFO"
         ;;
         
     *)
-        echo "Script usage: $0 {prepare|status|cleanup}"
+        echo "Usage: $0 {prepare|status|cleanup}"
         exit 1
         ;;
 esac

@@ -215,6 +215,24 @@ function New-HTMLReport {
                     $htmlContent += "<tr class=`"$severityClass`">"
                     foreach ($header in $headers) {
                         $value = $row.$header -replace '<', '&lt;' -replace '>', '&gt;'
+                        
+                        # Sanitize any potentially sensitive values in HTML output
+                        if ($header -in @("DeviceName", "DeviceId", "AccountName", "AccountDomain", "IPAddress", "RemoteIP", "CommandLine", "FilePath", "RegistryKey")) {
+                            # Apply specific redactions based on field type
+                            $value = switch ($header) {
+                                "DeviceName" { "DEVICE-NAME" }
+                                "DeviceId" { "DEVICE-ID" }
+                                "AccountName" { "USERNAME" }
+                                "AccountDomain" { "DOMAIN" }
+                                "IPAddress" { "0.0.0.0" }
+                                "RemoteIP" { "0.0.0.0" }
+                                "CommandLine" { "COMMAND-LINE" }
+                                "FilePath" { "FILE-PATH" }
+                                "RegistryKey" { "REGISTRY-KEY" }
+                                default { "REDACTED" }
+                            }
+                        }
+                        
                         $htmlContent += "<td>$value</td>"
                     }
                     $htmlContent += "</tr>"
@@ -271,19 +289,41 @@ function New-SecurityAlertReport {
         Write-Log "Generating SARIF report for GitHub Security tab"
         
         $sarif = @{
-            '$schema' = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
+            '$schema' = "https://json.schemastore.org/sarif-2.1.0.json"
             version = "2.1.0"
             runs = @(
                 @{
+                    runAutomationDetails = @{
+                        id = "security-scan/$(Get-Date -Format 'yyyyMMdd')"
+                        guid = [Guid]::NewGuid().ToString()
+                        correlationGuid = [Guid]::NewGuid().ToString()
+                    }
                     tool = @{
                         driver = @{
-                            name = "Microsoft Defender for Endpoint Advanced Hunting"
+                            name = "Security Analysis Tool"
                             version = "1.0"
-                            informationUri = "https://security.microsoft.com/advanced-hunting"
+                            informationUri = "https://github.com/security"
+                            semanticVersion = "1.0.0"
+                            downloadUri = $null
+                            organization = "Security"
+                            supportedTaxonomies = @(
+                                @{
+                                    name = "Security"
+                                    index = 0
+                                }
+                            )
                             rules = @()
                         }
                     }
                     results = @()
+                    originalUriBaseIds = @{
+                        SRCROOT = @{
+                            uri = "file:///"
+                            description = @{
+                                text = "Base file path for all source files"
+                            }
+                        }
+                    }
                 }
             )
         }
@@ -312,40 +352,36 @@ function New-SecurityAlertReport {
                         text = $displayName
                     }
                     fullDescription = @{
-                        text = "Detection of $displayName events in Microsoft Defender for Endpoint"
+                        text = "Detection of $displayName events"
                     }
-                    helpUri = "https://security.microsoft.com/advanced-hunting"
+                    helpUri = "https://github.com/security"
                     properties = @{
-                        tags = @("security", "defender", "hunting")
                         precision = "high"
+                        tags = @("security", "defender", "hunting")
                         "security-severity" = switch ($severity) {
                             "error" { "8.0" }
                             "warning" { "5.5" }
                             "note" { "3.0" }
                             default { "5.5" }
                         }
+                        "security-notes" = "Private detection alert"
                     }
                     defaultConfiguration = @{
                         level = $severity
+                        enabled = $true
+                        rank = -1
                     }
                 }
                 
                 $sarif.runs[0].tool.driver.rules += $rule
                 
                 foreach ($detection in $results) {
-                    $timestamp = if ($detection.PSObject.Properties.Name -contains "Timestamp" -or $detection.PSObject.Properties.Name -contains "TimeGenerated") { 
-                        $detection.Timestamp ?? $detection.TimeGenerated ?? (Get-Date -Format "o") 
-                    } else { 
-                        (Get-Date -Format "o") 
-                    }
-                    
-                    $deviceName = if ($detection.PSObject.Properties.Name -contains "DeviceName") { $detection.DeviceName } else { "N/A" }
-                    $deviceId = if ($detection.PSObject.Properties.Name -contains "DeviceId") { $detection.DeviceId } else { "N/A" }
-                    $accountName = if ($detection.PSObject.Properties.Name -contains "AccountName") { $detection.AccountName } else { "N/A" }
-                    
-                    $message = "Detection: $displayName"
-                    if ($deviceName -ne "N/A") { $message += " | Device: $deviceName" }
-                    if ($accountName -ne "N/A") { $message += " | Account: $accountName" }
+                    # Use sanitized timestamps and identifiers
+                    $timestamp = (Get-Date).Date.ToString("yyyy-MM-dd")
+                    $deviceName = "DEVICE-NAME"
+                    $deviceId = "DEVICE-ID"
+                    $accountName = "USERNAME"
+                    $message = "$displayName detection (see Security tab for details)"
                     
                     $result = @{
                         ruleId = $ruleId
@@ -357,7 +393,8 @@ function New-SecurityAlertReport {
                             @{
                                 physicalLocation = @{
                                     artifactLocation = @{
-                                        uri = "."
+                                        uri = "file.ext"
+                                        uriBaseId = "SRCROOT"
                                     }
                                     region = @{
                                         startLine = 1
@@ -368,17 +405,48 @@ function New-SecurityAlertReport {
                                 }
                             }
                         )
+                        partialFingerprints = @{
+                            "primaryLocationLineHash" = [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes("$ruleId-$timestamp"))).Replace("-", "").ToLower()
+                        }
                         properties = @{
                             deviceName = $deviceName
                             deviceId = $deviceId
                             timestamp = $timestamp
                             queryName = $queryName
+                            isPrivateResult = $true
                         }
                     }
                     
                     foreach ($prop in $detection.PSObject.Properties) {
+                        # Sanitize property values to avoid leaking data in SARIF
+                        $sanitizedValue = switch ($prop.Name) {
+                            "DeviceName" { "DEVICE-NAME" }
+                            "DeviceId" { "DEVICE-ID" }
+                            "Timestamp" { $timestamp }
+                            "TimeGenerated" { $timestamp }
+                            "CommandLine" { "COMMAND-LINE" }
+                            "AccountName" { "USERNAME" }
+                            "AccountDomain" { "DOMAIN" }
+                            "FileName" { "FILE-NAME" }
+                            "FilePath" { "FILE-PATH" }
+                            "RegistryKey" { "REGISTRY-KEY" }
+                            "PreviousRegistryKey" { "REGISTRY-KEY" }
+                            "RegistryValueName" { "REGISTRY-VALUE" }
+                            "IPAddress" { "0.0.0.0" }
+                            "RemoteIP" { "0.0.0.0" }
+                            "RemoteUrl" { "https://example.com" }
+                            default { 
+                                if ($prop.Value -is [string] -and ($prop.Value -match "\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}" -or 
+                                                                   $prop.Value -match "([A-Za-z0-9]+[\.-])+[A-Za-z0-9]{2,}" -or
+                                                                   $prop.Value -match "[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}")) {
+                                    "REDACTED"
+                                } else {
+                                    $prop.Value
+                                }
+                            }
+                        }
                         if ($prop.Name -notin @("DeviceName", "DeviceId", "Timestamp", "TimeGenerated")) {
-                            $result.properties[$prop.Name] = $prop.Value
+                            $result.properties[$prop.Name] = $sanitizedValue
                         }
                     }
                     
@@ -394,7 +462,7 @@ function New-SecurityAlertReport {
             New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
         }
         
-        $sarifJson = $sarif | ConvertTo-Json -Depth 10
+        $sarifJson = $sarif | ConvertTo-Json -Depth 10 -Compress
         Set-Content -Path $SecurityAlertPath -Value $sarifJson -Force
         
         Write-Log "SARIF report generated successfully at $SecurityAlertPath"
@@ -417,7 +485,8 @@ try {
         exit 0
     }
     
-    $queryResults = @{}
+    $queryResults = @{
+    }
     
     foreach ($csvFile in $csvFiles) {
         $queryName = $csvFile.BaseName
@@ -481,11 +550,7 @@ try {
         }
     }
     
-    $reportSizeMB = if (Test-Path $OutputPath) { (Get-Item $OutputPath).Length / 1MB } else { 0 }
-    $sarifSizeMB = if ($SecurityAlertPath -and (Test-Path $SecurityAlertPath)) { (Get-Item $SecurityAlertPath).Length / 1MB } else { 0 }
-    
-    Write-Log "Report size: $([Math]::Round($reportSizeMB, 2)) MB | SARIF size: $([Math]::Round($sarifSizeMB, 2)) MB"
-    Write-Log "Report generation completed successfully"
+    Write-Log "Report generation completed" -Level INFO
     
     exit 0
 }

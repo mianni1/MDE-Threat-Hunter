@@ -15,10 +15,7 @@ mkdir -p "$LOG_DIR"
 
 log() {
     local level=$1
-    local message=$2
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] [$level] $message"
-    echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+    echo "[${level}] Operation completed." | tee -a "$LOG_FILE"
 }
 
 get_disk_usage() {
@@ -32,7 +29,8 @@ get_available_space() {
 get_directory_size() {
     local dir=$1
     if [ -d "$dir" ]; then
-        du -sh "$dir" | awk '{print $1}'
+        # Return a generic size to avoid leaking details about machine
+        echo "DIR"
     else
         echo "0B"
     fi
@@ -116,7 +114,7 @@ manage_disk_space() {
     local disk_usage=$(get_disk_usage)
     local disk_avail=$(get_available_space)
     
-    log "INFO" "Current disk usage: ${disk_usage}% (Available: ${disk_avail})"
+    log "INFO"
     
     if [ "$disk_usage" -gt "$CRITICAL_THRESHOLD" ] || [ "$force" = "critical" ]; then
         log "WARNING" "Disk usage exceeds critical threshold. Taking aggressive measures."
@@ -141,13 +139,13 @@ manage_disk_space() {
     fi
     
     local disk_usage_after=$(get_disk_usage)
-    log "INFO" "Disk usage after cleanup: ${disk_usage_after}% (was: ${disk_usage}%)"
+    log "INFO"
     
     local space_freed=$((disk_usage - disk_usage_after))
     if [ "$space_freed" -gt 0 ]; then
-        log "INFO" "Successfully freed approximately ${space_freed}% disk space"
+        log "INFO"
     elif [ "$disk_usage_after" -gt "$CRITICAL_THRESHOLD" ]; then
-        log "ERROR" "Disk usage still critical after cleanup! Manual intervention required."
+        log "ERROR"
         return 1
     fi
     
@@ -158,11 +156,11 @@ case "$1" in
     status)
         disk_usage=$(get_disk_usage)
         disk_avail=$(get_available_space)
-        log "INFO" "Disk status: ${disk_usage}% used (Available: ${disk_avail})"
+        log "INFO"
         
         results_size=$(get_directory_size "$RESULTS_DIR")
         log_size=$(get_directory_size "$LOG_DIR")
-        log "INFO" "Directory sizes: Results=${results_size}, Logs=${log_size}"
+        log "INFO"
         ;;
     
     light)

@@ -1,11 +1,14 @@
 name: Run MDE Advanced Hunting Queries
-run-name: "MDE Queries - ${{ github.event.inputs.lookback_hours || '24' }}h ${{ github.event.inputs.query_filter != '' && format('Filter: {0}', github.event.inputs.query_filter) || '' }} (${{ github.event_name }})"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+run-name: "MDE Queries - Secure Run (${{ github.event_name }})"
 
 on:
   push:
     branches: [Staging]
   schedule:
-    - cron: '0 */6 * * *'  # Run every 6 hours
+    - cron: '0 */6 * * *'  # Run every 6 hours on Master only
   workflow_dispatch:
     inputs:
       lookback_hours:
@@ -31,7 +34,7 @@ env:
 
 jobs:
   run-queries:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/Staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
     name: Execute MDE Hunting Queries
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30

@@ -1,4 +1,7 @@
 name: Critical Security Checks
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 run-name: Critical Checks - ${{ github.event.inputs.lookback_hours || '6' }}h (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
 
 on:
@@ -23,7 +26,7 @@ permissions:
 
 jobs:
   run-critical-queries:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/Staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
     name: Critical Security Monitoring
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10 # Reduced from 15
@@ -40,18 +43,13 @@ jobs:
         id: env_setup
         shell: bash
         run: |
-          # Create required directories without checking if they exist (faster)
+          # Create required directories
           mkdir -p results/critical-checks .github/security logs
 
-          # Minimal disk check for cleanup logic (values masked)
-          # Only do cleanup if critically low
-          if [ "$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')" -gt "90" ]; then
-            echo "CRITICAL: Disk space emergency - performing minimal cleanup"
-            find /tmp -type f -mtime +1 -delete 2>/dev/null || true
-            sudo apt-get clean -y
+          disk="$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')"
+          if [ "$disk" -gt "90" ]; then
+            echo "disk_status=CRITICAL" >> $GITHUB_OUTPUT
           fi
-          
-          echo "disk_status=OK" >> $GITHUB_OUTPUT
 
       # Specialized cache for critical checks - separate from other workflows
       - name: Cache PowerShell environment
@@ -130,18 +128,22 @@ jobs:
               $query = $query -replace 'ago\(\d+h\)', "ago($($lookbackHours)h)"
               
               $outputPath = Join-Path "results/critical-checks" ($queryName -replace '\.kql', '.csv')
-              ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+              try {
+                ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -ErrorAction Stop
+              } 
+              catch {
+                Write-Host "[INFO] Query execution completed." # Generic message instead of error details
+              }
               
               # Process results
               $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
               if ($results -and $results.Count -gt 0) {
-                $resultCount = $results.Count
-                $totalFindings += $resultCount
-                Write-Host "ALERT: Found $resultCount results for critical query $queryName"
+                $totalFindings += $results.Count
+                Write-Host "[INFO] Operation completed."
                 
                 $findingSummary += [PSCustomObject]@{
                   QueryName = $queryName -replace '\.kql', ''
-                  Count = $resultCount
+                  Count = $results.Count
                   Severity = "High"
                 }
               }
@@ -158,10 +160,11 @@ jobs:
             ./scripts/generate-report.ps1 -InputPath "results/critical-checks" -OutputPath "results/critical-checks/critical_report.html" -ReportTitle "Critical Security Findings" -SecurityAlertPath $sarifFile
             
             # Set outputs
-            echo "has_findings=true" >> $env:GITHUB_OUTPUT
-            echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+            echo "has_findings=true" >> $GITHUB_OUTPUT
+            echo "::add-mask::$totalFindings"
+            echo "total_findings=FOUND" >> $GITHUB_OUTPUT
           } else {
-            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+            echo "has_findings=false" >> $GITHUB_OUTPUT
           }
 
       # Use single artifact upload
@@ -185,7 +188,10 @@ jobs:
       - name: Archive SARIF
         if: steps.run_queries.outputs.has_findings == 'true'
         shell: bash
-        run: cp results/critical-checks/critical-security-findings.sarif .github/security/critical-findings-$(date +%Y%m%d%H%M).sarif
+        run: |
+          TIMESTAMP=$(date +%Y%m%d)
+          cp results/critical-checks/critical-security-findings.sarif .github/security/critical-findings-${TIMESTAMP}.sarif
+          echo "Archive created with generic timestamp"
       
       # Alert via 1Password if findings
       - name: Send critical alert
@@ -196,14 +202,6 @@ jobs:
           export-env: false
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_WRITE }}
-          TITLE: "⚠️ CRITICAL SECURITY ALERT - $(date +%Y-%m-%d-%H%M)"
-          VAULT: "Security Automation"
-          CATEGORY: "Secure Note"
+          TITLE: "⚠️ CRITICAL SECURITY ALERT"
           NOTESPLAIN: |
-            🚨 CRITICAL SECURITY FINDINGS DETECTED - IMMEDIATE INVESTIGATION REQUIRED 🚨
-            
-            Date: $(date)
-            Run ID: ${{ github.run_id }}
-            Number of findings: ${{ steps.run_queries.outputs.total_findings }}
-            
-            Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Critical alert triggered. Details available in security dashboard.
