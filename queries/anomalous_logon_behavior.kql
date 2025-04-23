@@ -1,0 +1,60 @@
+// DESCRIPTION:
+// Detection of unusual user logon patterns that may indicate account compromise or unauthorised access.
+// TECHNICAL:
+// This alert identifies anomalous authentication patterns by establishing baseline behaviour over 30 days and flagging deviations such as: new logon hours, unusual logon types, first-time account usage on devices, weekend activity, after-hours access, or connections from new remote devices.
+// MITRE_ATTACK:
+// T1078 (Valid Accounts), T1021 (Remote Services), T1550 (Use Alternate Authentication Material)
+// IMPACT:
+// Compromised credentials may be used to access sensitive systems and data, potentially leading to data theft or further network compromise.
+// REMEDIATION:
+// Investigate the unusual logon activity, verify with the user if it was legitimate, consider forcing a password reset, and implement multi-factor authentication if not already in place.
+// END_DESCRIPTION
+
+// API-compatible query with standard time filter format
+let timeWindow = ago(1d);
+
+DeviceLogonEvents
+| where Timestamp > timeWindow
+| where ActionType in ("LogonSuccess", "LogonFailed")
+| extend CurrentHour = datetime_part("hour", Timestamp)
+| extend IsWeekend = dayofweek(Timestamp) == 0 or dayofweek(Timestamp) == 6
+| extend IsAfterHours = CurrentHour < 6 or CurrentHour > 18
+// Join with historical data using a subquery
+| join kind=leftouter (
+    DeviceLogonEvents
+    | where Timestamp between (ago(30d) .. ago(1d))
+    | where ActionType == "LogonSuccess"
+    | extend CleanRemoteDevice = tostring(RemoteDeviceName)
+    | summarize 
+        KnownLogonHours = make_set(datetime_part("hour", Timestamp)), 
+        KnownLogonTypes = make_set(LogonType),
+        KnownLogonAccounts = make_set(AccountName),
+        KnownRemoteDevices = make_set(CleanRemoteDevice),
+        LogonCount = count()
+        by DeviceName
+) on DeviceName
+| extend IsNewLogonHour = array_index_of(KnownLogonHours, CurrentHour) == -1
+| extend IsNewLogonType = array_index_of(KnownLogonTypes, LogonType) == -1
+| extend IsNewAccount = array_index_of(KnownLogonAccounts, AccountName) == -1
+| extend CleanRemoteDevice = tostring(RemoteDeviceName)
+| extend IsNewRemoteDevice = iff(isempty(CleanRemoteDevice), false, array_index_of(KnownRemoteDevices, CleanRemoteDevice) == -1)
+| extend AnomalyFlags = pack_array(
+    IsNewLogonHour, IsNewLogonType, IsNewAccount, IsNewRemoteDevice, IsWeekend, IsAfterHours)
+| extend AnomalyScore = array_sum(AnomalyFlags)
+| where AnomalyScore >= 2 or IsNewAccount
+| project
+    Timestamp,
+    DeviceName, 
+    AccountName,
+    RemoteDeviceName,
+    RemoteIP,
+    LogonType,
+    IsNewAccount,
+    IsNewLogonType,
+    IsNewLogonHour,
+    IsAfterHours,
+    IsWeekend,
+    IsNewRemoteDevice,
+    AnomalyScore,
+    FailureReason,
+    ReportId = hash_sha256(strcat(DeviceName, AccountName, LogonType, tostring(Timestamp)))

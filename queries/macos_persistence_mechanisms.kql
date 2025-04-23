@@ -1,0 +1,62 @@
+// DESCRIPTION:
+// Detection of potentially malicious persistence mechanisms on macOS systems through launch agent and daemon plist files.
+// TECHNICAL:
+// This alert identifies newly created or modified .plist files in macOS launch directories that are not signed by Apple. These files can be used by attackers to maintain persistence across system reboots by automatically executing malicious code.
+// MITRE_ATTACK:
+// T1547.011 (Plist Modification), T1543.001 (Launch Agent/Daemon), T1546 (Event Triggered Execution)
+// IMPACT:
+// Attackers may have established persistence that allows malware to survive system reboots and user logoffs.
+// REMEDIATION:
+// Review the identified plist files for legitimacy, verify publisher signatures, remove unauthorised launch agents/daemons, and investigate the process that created them.
+// END_DESCRIPTION
+
+// API-compatible version with time-filtered tables for validation
+let timeWindow = ago(24h);
+
+DeviceFileCertificateInfo 
+| where Timestamp > timeWindow
+| where DeviceFileCertificateInfo.Timestamp > timeWindow
+| where FileName endswith ".plist"
+| where FolderPath has_any (
+    "/Library/LaunchAgents/",
+    "/Library/LaunchDaemons/",
+    "/System/Library/LaunchAgents/",
+    "/System/Library/LaunchDaemons/",
+    "/Users/"
+)
+| project 
+    DFCI_FileName=FileName,
+    DFCI_FolderPath=FolderPath,
+    DeviceId,
+    Signer,
+    SignatureStatus,
+    SHA256
+| join kind=inner (
+    DeviceFileEvents 
+    | where Timestamp > timeWindow
+    | where DeviceFileEvents.Timestamp > timeWindow
+    | where ActionType in ("FileCreated", "FileModified")
+    | where FileName endswith ".plist"
+    | project 
+        DFE_Timestamp=Timestamp,
+        DFE_DeviceName=DeviceName,
+        DFE_FileName=FileName,
+        DeviceId,
+        ActionType,
+        InitiatingProcessAccountName,
+        InitiatingProcessCommandLine
+) on DeviceId
+| where DFCI_FileName == DFE_FileName
+| where not(Signer in~ ("Apple Inc.", "Apple Computer, Inc."))
+| project
+    Timestamp = DFE_Timestamp,
+    DeviceName = DFE_DeviceName,
+    FileName = DFCI_FileName,
+    FolderPath = DFCI_FolderPath,
+    Signer,
+    SignatureStatus,
+    ActionType,
+    InitiatingProcessAccountName,
+    InitiatingProcessCommandLine,
+    SHA256,
+    ReportId = hash_sha256(strcat(DFE_DeviceName, DFCI_FileName, DFCI_FolderPath, tostring(DFE_Timestamp)))

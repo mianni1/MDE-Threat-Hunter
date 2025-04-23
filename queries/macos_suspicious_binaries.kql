@@ -1,0 +1,57 @@
+// DESCRIPTION:
+// Detection of suspicious binary files on macOS systems that may indicate malware.
+// TECHNICAL:
+// This alert identifies executable files with unusual characteristics such as unsigned binaries, files with revoked certificates, binaries with suspicious paths or names, and those matching known malware patterns.
+// MITRE_ATTACK:
+// T1204 (User Execution), T1059.004 (Command and Scripting Interpreter: Unix Shell), T1543.001 (Create or Modify System Process: Launch Agent)
+// IMPACT:
+// Malicious binaries may be present on macOS systems, potentially leading to data theft, system compromise, or persistence.
+// REMEDIATION:
+// Investigate identified binaries, check reputation through threat intelligence sources, remove malicious files, and determine the initial infection vector.
+// END_DESCRIPTION
+
+// API-compatible query with time-filtered tables for validation
+let timeWindow = ago(24h);
+
+DeviceFileEvents 
+| where Timestamp > timeWindow
+| where DeviceFileEvents.Timestamp > timeWindow
+| where FileName endswith ".app" or FileName endswith ".bin" or FileName endswith ".sh"
+| project 
+    DFE_Timestamp=Timestamp,
+    DFE_DeviceName=DeviceName,
+    DFE_FileName=FileName,
+    DFE_FolderPath=FolderPath,
+    DeviceId,
+    ActionType,
+    InitiatingProcessAccountName,
+    InitiatingProcessCommandLine
+| join kind=leftouter (
+    DeviceFileCertificateInfo
+    | where Timestamp > timeWindow
+    | where DeviceFileCertificateInfo.Timestamp > timeWindow
+    | project 
+        DeviceId,
+        DFCI_FileName=FileName,
+        Signer,
+        SignatureStatus,
+        SHA256
+) on DeviceId
+| where DFE_FileName == DFCI_FileName or isempty(DFCI_FileName)
+| where 
+    SignatureStatus == "Unsigned" or
+    SignatureStatus == "Revoked" or
+    DFE_FolderPath has_any ("/tmp/", "/private/tmp/", "/var/tmp/", "/dev/", "/private/var/folders/") or
+    InitiatingProcessCommandLine has_any ("curl ", "wget ", "chmod +x")
+| project
+    Timestamp = DFE_Timestamp,
+    DeviceName = DFE_DeviceName,
+    FileName = DFE_FileName,
+    FolderPath = DFE_FolderPath,
+    Signer,
+    SignatureStatus,
+    SHA256,
+    ActionType,
+    InitiatingProcessAccountName,
+    InitiatingProcessCommandLine,
+    ReportId = hash_sha256(strcat(DFE_DeviceName, DFE_FileName, tostring(DFE_Timestamp)))

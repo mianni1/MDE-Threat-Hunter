@@ -1,0 +1,49 @@
+// DESCRIPTION:
+// Detection of suspicious command execution on macOS systems that may indicate malicious activity.
+// TECHNICAL:
+// This alert identifies execution of potentially dangerous commands on macOS including script execution (osascript), file downloads (curl/wget), network connections (nc/netcat), permissions changes (chmod), service manipulation (launchctl), or privilege escalation (sudo). Focus is on commands not initiated from standard application directories.
+// MITRE_ATTACK:
+// T1059.004 (Unix Shell), T1105 (Ingress Tool Transfer), T1059.002 (AppleScript), T1548.003 (Sudo and Sudo Caching)
+// IMPACT:
+// Attackers may be downloading malicious payloads, executing malicious scripts, or attempting to gain elevated privileges.
+// REMEDIATION:
+// Investigate the process execution context, isolate affected systems if malicious activity is confirmed, and review security policies for script execution.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
+DeviceProcessEvents
+| where Timestamp > timeWindow
+| where InitiatingProcessCommandLine has_any(
+    "osascript -e", 
+    "curl", 
+    "wget", 
+    "nc ", 
+    "ncat ", 
+    "netcat",
+    "python -c", 
+    "perl -e", 
+    "ruby -e", 
+    "bash -c", 
+    "zsh -c",
+    "chmod +x", 
+    "launchctl load",
+    "sudo -s"
+)
+| where not(InitiatingProcessFolderPath has_any(
+    "/Applications/", 
+    "/System/Library/"
+))
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    MD5,
+    ReportId = hash_sha256(strcat(DeviceName, FileName, ProcessCommandLine, tostring(Timestamp)))

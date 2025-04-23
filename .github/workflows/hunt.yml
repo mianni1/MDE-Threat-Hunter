@@ -1,0 +1,273 @@
+name: MDE Hunt
+
+on:
+  push:
+    branches: [staging]
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      lookback:
+        description: 'Lookback period'
+        type: choice
+        default: '24h'
+        options: ['6h', '24h', '7d', '30d']
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
+          MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
+          MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+      
+      - name: Hunt
+        id: hunt
+        shell: pwsh
+        run: |
+          $lookback = if ('${{ github.event.inputs.lookback }}' -and '${{ github.event.inputs.lookback }}' -ne '') { '${{ github.event.inputs.lookback }}' } else { '24h' }
+          
+          # Check if required secrets are configured
+          if (-not $env:MDE_TENANT_ID -or -not $env:MDE_CLIENT_ID -or -not $env:MDE_CLIENT_SECRET) {
+            Write-Host "⚠️ MDE secrets not configured. This is expected for forks or testing." -ForegroundColor Yellow
+            Write-Host "To enable MDE hunting, configure these in 1Password:" -ForegroundColor Yellow
+            Write-Host "  - Vault: Security Automation" -ForegroundColor Yellow
+            Write-Host "  - Item: MDE API Credentials" -ForegroundColor Yellow  
+            Write-Host "  - Fields: MDE_TENANT_ID, MDE_CLIENT_ID, MDE_CLIENT_SECRET" -ForegroundColor Yellow
+            Write-Host "  - GitHub Secret: OP_SERVICE_ACCOUNT_TOKEN_READ" -ForegroundColor Yellow
+            Write-Host "Skipping MDE queries and generating sample SARIF report for testing..." -ForegroundColor Yellow
+            
+            # Generate sample SARIF for testing workflow
+            $sampleSarif = @{
+              '$schema' = "https://json.schemastore.org/sarif-2.1.0.json"
+              version = "2.1.0"
+              runs = @(@{
+                tool = @{
+                  driver = @{
+                    name = "MDE-Threat-Hunter"
+                    version = "2.0.0"
+                    informationUri = "https://github.com/mianni1/MDE-Threat-Hunter"
+                    shortDescription = @{ text = "Microsoft Defender for Endpoint Advanced Hunting" }
+                    fullDescription = @{ text = "MDE secrets not configured - sample report generated" }
+                  }
+                }
+                results = @()
+                properties = @{
+                  executionTime = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+                  lookbackPeriod = $lookback
+                  totalFindings = 0
+                  totalQueries = (Get-ChildItem queries -Filter "*.kql").Count
+                  note = "MDE secrets not configured - configure secrets to enable real threat hunting"
+                }
+              })
+            }
+            
+            $sampleSarifJson = $sampleSarif | ConvertTo-Json -Depth 15 -Compress:$false
+            $sampleSarifJson | Out-File -FilePath "mde-findings.sarif" -Encoding UTF8
+            
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+            echo "total_findings=0" >> $env:GITHUB_OUTPUT
+            return
+          }
+          
+          # Get token
+          try {
+            $body = @{ 
+              client_id = $env:MDE_CLIENT_ID
+              scope = 'https://api.security.microsoft.com/.default'
+              client_secret = $env:MDE_CLIENT_SECRET
+              grant_type = 'client_credentials'
+            }
+            $token = (Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$env:MDE_TENANT_ID/oauth2/v2.0/token" -Body $body -ContentType 'application/x-www-form-urlencoded').access_token
+            $headers = @{ Authorization = "Bearer $token" }
+            Write-Host "✅ Successfully authenticated with MDE API" -ForegroundColor Green
+          } catch {
+            Write-Host "❌ Failed to authenticate with MDE API: $_" -ForegroundColor Red
+            Write-Host "Please verify your MDE secrets are correct" -ForegroundColor Red
+            exit 1
+          }
+          $headers = @{ Authorization = "Bearer $token" }
+          
+          # Run queries and build SARIF
+          $findings = @()
+          $rules = @()
+          $ruleIndex = 1
+          
+          Get-ChildItem queries -Filter "*.kql" | ForEach-Object {
+            $queryName = $_.BaseName
+            $query = Get-Content $_.FullName -Raw
+            
+            # Add time filter
+            if ($query -notmatch 'ago\(' -and $query -match '(DeviceProcessEvents|DeviceNetworkEvents|DeviceLogonEvents|DeviceFileEvents|DeviceRegistryEvents)') {
+              $table = [regex]::Match($query, '(DeviceProcessEvents|DeviceNetworkEvents|DeviceLogonEvents|DeviceFileEvents|DeviceRegistryEvents)').Value
+              if ($query -match 'where') {
+                $query = $query -replace 'where', "where $table.Timestamp > ago($lookback) and "
+              } else {
+                $query = $query -replace $table, "$table | where Timestamp > ago($lookback)"
+              }
+            }
+            
+            try {
+              $body = @{ Query = $query } | ConvertTo-Json
+              $results = (Invoke-RestMethod -Method Post -Uri 'https://api.security.microsoft.com/api/advancedhunting/run' -Headers $headers -Body $body -ContentType 'application/json').Results
+              
+              if ($results.Count -gt 0) {
+                Write-Host "Alert - $queryName`: $($results.Count) findings"
+                
+                # Determine severity
+                $level = "warning"
+                $severity = "medium"
+                if ($queryName -match '(credential|ransomware|privilege|lateral_movement|defense_evasion)') {
+                  $level = "error"
+                  $severity = "high"
+                } elseif ($queryName -match '(malware|rootkit)') {
+                  $level = "error" 
+                  $severity = "high"
+                } elseif ($queryName -match '(suspicious|anomalous)') {
+                  $level = "warning"
+                  $severity = "medium"
+                } else {
+                  $level = "note"
+                  $severity = "low"
+                }
+                
+                # Create rule definition
+                $ruleId = "MDE_$($queryName.Replace('_', '').Replace('-', ''))"
+                $rules += @{
+                  id = $ruleId
+                  name = $queryName.Replace('_', ' ').Replace('-', ' ')
+                  shortDescription = @{
+                    text = "MDE Advanced Hunting: $($queryName.Replace('_', ' '))"
+                  }
+                  fullDescription = @{
+                    text = "Microsoft Defender for Endpoint Advanced Hunting query detected $($results.Count) security findings"
+                  }
+                  defaultConfiguration = @{
+                    level = $level
+                  }
+                  properties = @{
+                    tags = @("security", "mde", "threat-hunting")
+                    "security-severity" = $severity
+                    precision = "high"
+                  }
+                  helpUri = "https://security.microsoft.com/advanced-hunting"
+                }
+                
+                # Create finding
+                $findings += @{
+                  ruleId = $ruleId
+                  ruleIndex = $ruleIndex
+                  level = $level
+                  message = @{ 
+                    text = "Found $($results.Count) security events matching pattern: $($queryName.Replace('_', ' '))"
+                  }
+                  locations = @(@{
+                    physicalLocation = @{
+                      artifactLocation = @{
+                        uri = "queries/$($_.Name)"
+                      }
+                      region = @{
+                        startLine = 1
+                        startColumn = 1
+                      }
+                    }
+                  })
+                  properties = @{
+                    findingCount = $results.Count
+                    queryName = $queryName
+                    lookbackPeriod = $lookback
+                    severity = $severity
+                  }
+                }
+                
+                $ruleIndex++
+              }
+            } catch {
+              Write-Warning "Failed $($_.Name): $_"
+            }
+          }
+          
+          # Create comprehensive SARIF report
+          if ($findings.Count -gt 0) {
+            $sarif = @{
+              '$schema' = "https://json.schemastore.org/sarif-2.1.0.json"
+              version = "2.1.0"
+              runs = @(@{
+                tool = @{
+                  driver = @{
+                    name = "MDE-Threat-Hunter"
+                    version = "2.0.0"
+                    informationUri = "https://github.com/mianni1/MDE-Threat-Hunter"
+                    shortDescription = @{
+                      text = "Microsoft Defender for Endpoint Advanced Hunting"
+                    }
+                    fullDescription = @{
+                      text = "Automated threat hunting using Microsoft Defender for Endpoint Advanced Hunting queries"
+                    }
+                    rules = $rules
+                  }
+                }
+                results = $findings
+                columnKind = "utf16CodeUnits"
+                properties = @{
+                  executionTime = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+                  lookbackPeriod = $lookback
+                  totalFindings = $findings.Count
+                  totalQueries = (Get-ChildItem queries -Filter "*.kql").Count
+                }
+              })
+            }
+            
+            $sarifJson = $sarif | ConvertTo-Json -Depth 15 -Compress:$false
+            $sarifJson | Out-File -FilePath "mde-findings.sarif" -Encoding UTF8
+            
+            # Also save to security directory for history
+            New-Item -ItemType Directory -Path ".github/security" -Force | Out-Null
+            Copy-Item "mde-findings.sarif" ".github/security/mde-findings-$(Get-Date -Format 'yyyyMMdd-HHmm').sarif"
+            
+            Write-Host "Generated SARIF report with $($findings.Count) findings"
+            echo "has_findings=true" >> $env:GITHUB_OUTPUT
+            echo "total_findings=$($findings.Count)" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No security findings detected"
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+            echo "total_findings=0" >> $env:GITHUB_OUTPUT
+          }
+      
+      - name: Upload SARIF to GitHub Security
+        if: steps.hunt.outputs.has_findings == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: mde-findings.sarif
+          category: "mde-threat-hunting"
+      
+      - name: Summary
+        run: |
+          echo "## MDE Threat Hunting Results" >> $GITHUB_STEP_SUMMARY
+          echo "**Lookback Period:** ${{ github.event.inputs.lookback || '24h' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Findings:** ${{ steps.hunt.outputs.total_findings || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.hunt.outputs.has_findings }}" == "true" ]; then
+            echo "⚠️ **Security findings detected!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "View detailed findings in:" >> $GITHUB_STEP_SUMMARY
+            echo "- [GitHub Security Tab](https://github.com/${{ github.repository }}/security/code-scanning?query=is%3Aopen+tool%3AMDE-Threat-Hunter)" >> $GITHUB_STEP_SUMMARY
+            echo "- [SARIF Report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **No security threats detected**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All queries executed successfully with no findings." >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,67 @@
+// DESCRIPTION:
+// Detection of suspicious cloud service activities that may indicate data exfiltration, account compromise, or other malicious actions.
+// TECHNICAL:
+// This alert triggers on high-risk cloud activities including: mass downloads, mail exports, anonymous IP usage, administrator logins from unusual countries, mail forwarding/redirection rule creation, or unusual user-agent combinations. Events are risk-scored based on severity.
+// MITRE_ATTACK:
+// T1530 (Data from Cloud Storage Object), T1078 (Valid Accounts), T1114 (Email Collection), T1534 (Internal Spearphishing)
+// IMPACT:
+// Data exfiltration, account compromise, email theft, or preparation for additional attacks may be underway.
+// REMEDIATION:
+// Reset compromised account credentials, review and remove suspicious mail forwarding rules, lock suspicious IP addresses, and consider implementing additional cloud security controls.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(1d);
+
+CloudAppEvents
+| where Timestamp > timeWindow
+| where ActionType in~ (
+    "FileDownloaded", 
+    "FileDownloadedByUnknownIPAddress", 
+    "MassDownload", 
+    "MailItemsAccessed",
+    "MailExport", 
+    "NonOrganic-Download-IP-Generic", 
+    "AdminLoginFromNewCountry", 
+    "MailForwardingRuleSet",
+    "MailRedirectionRuleSet", 
+    "AnonymousIPUsed", 
+    "NewUserAgentForUser"
+)
+| extend RawData = RawEventData
+| extend ActivityParameters = todynamic(RawData.ActivityParameters)
+| extend UserAgent = tostring(RawData.UserAgent)
+| extend DeviceOS = extractjson("$.OS", UserAgent, typeof(string))
+| extend Browser = extractjson("$.Browser", UserAgent, typeof(string))
+| extend IPAddress = tostring(RawData.IPAddress)
+| extend Country = tostring(RawData.Country)
+| extend City = tostring(RawData.City)
+| extend IsAnonymousProxy = tostring(RawData.IsAnonymousProxy)
+| extend IsNewIPAddress = tostring(RawData.IsNewIPAddress)
+| extend DownloadedFileCount = tostring(ActivityParameters.[1].Value)
+| extend RiskScore = case(
+    ActionType has_any("MassDownload", "MailExport"), 80,
+    ActionType has "AnonymousIPUsed" or IsAnonymousProxy == "true", 70,
+    ActionType has "NewUserAgentForUser" and IsNewIPAddress == "true", 60,
+    ActionType has "AdminLoginFromNewCountry", 75,
+    ActionType has_any("MailForwardingRuleSet", "MailRedirectionRuleSet"), 85,
+    ActionType has "FileDownloadedByUnknownIPAddress", 65,
+    50
+)
+| where RiskScore > 50
+| project
+    Timestamp,
+    ActionType,
+    AccountDisplayName,
+    IPAddress,
+    Country,
+    City,
+    IsAnonymousProxy,
+    IsNewIPAddress,
+    DeviceOS,
+    Browser,
+    RiskScore,
+    ActivityType,
+    ObjectName,
+    DownloadedFileCount,
+    ReportId = hash_sha256(strcat(AccountDisplayName, IPAddress, ActionType, tostring(Timestamp)))

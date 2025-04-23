@@ -1,0 +1,68 @@
+// DESCRIPTION:
+// Detection of potential persistence techniques used by attackers to maintain access to Windows systems across reboots.
+// TECHNICAL:
+// This alert identifies modifications to common Windows persistence locations including: Run/RunOnce registry keys, Winlogon registry entries, Explorer startup folders, and user shell folders. These locations can be abused to maintain unauthorised access to compromised systems.
+// MITRE_ATTACK:
+// T1547 (Boot or Logon Autostart Execution), T1037 (Boot or Logon Initialization Scripts), T1546 (Event Triggered Execution)
+// IMPACT:
+// Attackers may maintain access to compromised systems even after system restarts or user logoffs.
+// REMEDIATION:
+// Review the identified persistence mechanisms, verify if they are legitimate applications, remove unauthorised entries, and investigate how they were created.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(24h);
+
+// Query for registry events related to persistence
+DeviceRegistryEvents
+| where Timestamp > timeWindow
+| where DeviceRegistryEvents.Timestamp > timeWindow
+| where RegistryKey has_any (
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\RunEx",
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run",
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\RunOnce",
+    "\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Userinit",
+    "\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Shell",
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer\\Run",
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders",
+    "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders"
+)
+| extend SourceType = "Registry"
+| project
+    Timestamp,
+    DeviceName,
+    ActionType,
+    RegistryKey,
+    RegistryValueName,
+    RegistryValueData,
+    FileName,
+    FolderPath,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    SourceType,
+    ReportId = hash_sha256(strcat(DeviceName, tostring(Timestamp), RegistryKey))
+    
+// Union with process events related to startup folders
+| union (
+    DeviceFileEvents 
+    | where Timestamp > timeWindow
+    | where DeviceFileEvents.Timestamp > timeWindow
+    | where FolderPath has_any (
+        "\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+        "\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp"
+    )
+    | extend SourceType = "File"
+    | project
+        Timestamp,
+        DeviceName,
+        ActionType,
+        FileName,
+        FolderPath,
+        SHA256,
+        InitiatingProcessFileName,
+        InitiatingProcessCommandLine,
+        SourceType,
+        ReportId = hash_sha256(strcat(DeviceName, FileName, FolderPath, tostring(Timestamp)))
+)

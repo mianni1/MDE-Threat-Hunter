@@ -1,0 +1,56 @@
+// DESCRIPTION:
+// Detection of techniques used to bypass security controls, disable defences, or hide malicious activities on Windows systems.
+// TECHNICAL:
+// This alert is triggered by: (1) Commands that stop or disable security services =~ Windows Defender, firewall services, or other EDR solutions, (2) Tampering with Windows Event Logging or security monitoring, (3) Use of known AMSI bypass techniques, (4) Process hollowing or injection indicators such as unusual memory allocations in remote processes via VirtualAllocEx or WriteProcessMemory, (5) Unusual driver loading operations with suspicious digital signatures.
+// MITRE_ATTACK:
+// T1562 (Impair Defences), T1112 (Modify Registry), T1070 (Indicator Removal on Host), T1055 (Process Injection)
+// IMPACT:
+// Security tools may be compromised, allowing attackers to operate undetected.
+// REMEDIATION:
+// Verify integrity of security tools, review disabled services, and investigate suspicious registry modifications.
+// END_DESCRIPTION
+
+// API-compatible query 
+DeviceProcessEvents
+| where ProcessCommandLine has_any(
+    "sc stop WinDefend",
+    "sc config WinDefend start=disabled",
+    "Set-MpPreference -DisableRealtimeMonitoring",
+    "New-ItemProperty -Path",
+    "Add-MpPreference -ExclusionPath",
+    "Add-MpPreference -ExclusionProcess",
+    "Add-MpPreference -ExclusionExtension",
+    "powershell -ep bypass",
+    "powershell -exec bypass",
+    "-ExecutionPolicy Bypass",
+    "-WindowStyle Hidden",
+    "reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender",
+    "reg delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run /v SecurityHealth",
+    "bcdedit /set",
+    "schtasks /change",
+    "vssadmin delete shadows",
+    "wevtutil cl",
+    "/noprofile",
+    "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v EnableLUA /t REG_DWORD /d 0",
+    "taskkill /f /im MsMpEng.exe",
+    "auditpol /set /category:\"System\""
+)
+| where not(InitiatingProcessFolderPath has_any(
+    "\\Program Files\\Microsoft Security Client\\",
+    "\\Program Files\\Windows Defender\\",
+    "\\Program Files\\Microsoft Defender\\",
+    "\\Program Files (x86)\\Microsoft Security Client\\",
+    "\\MDM\\",
+    "\\ConfigMgr\\"
+))
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    AccountDomain,
+    FileName,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    ReportId = hash_sha256(strcat(DeviceName, ProcessCommandLine, tostring(Timestamp)))

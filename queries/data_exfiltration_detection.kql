@@ -1,0 +1,51 @@
+// DESCRIPTION:
+// Detection of potential data exfiltration activities through network connections to external destinations.
+// TECHNICAL:
+// This alert identifies when non-standard applications transfer significant amounts of data (>500KB) to external IP addresses that aren't part of private IP ranges. The detection excludes common legitimate software and focuses on connections to destinations that aren't normally accessed by the specific process.
+// MITRE_ATTACK:
+// T1048 (Exfiltration Over Alternative Protocol), T1041 (Exfiltration Over C2 Channel), T1567 (Exfiltration Over Web Service)
+// IMPACT:
+// Attackers may be stealing sensitive data from the environment by sending it to external servers they control.
+// REMEDIATION:
+// Investigate the process initiating the connection and the destination IP, quarantine affected systems, and block further communication with suspicious destinations.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(24h);
+
+DeviceNetworkEvents
+| where Timestamp > timeWindow
+| where ActionType == "ConnectionSuccess"
+| where not(ipv4_is_private(RemoteIP))
+// Exclude common legitimate processes
+| where InitiatingProcessFileName !in~ (
+    "chrome.exe", "msedge.exe", "firefox.exe", "safari.exe", "iexplore.exe", "brave.exe", "opera.exe",
+    "svchost.exe", "MsMpEng.exe", "NisSrv.exe", "OneDrive.exe", "Teams.exe", "Outlook.exe", "thunderbird.exe",
+    "github.exe", "git.exe", "slack.exe", "winstore.exe", "msteams.exe", "Dropbox.exe", "GoogleDriveFS.exe"
+)
+// Join with historical data to identify uncommon destinations
+| join kind=leftouter (
+    DeviceNetworkEvents
+    | where Timestamp > ago(30d) and Timestamp < ago(1d)
+    | where ActionType == "ConnectionSuccess"
+    | where not(ipv4_is_private(RemoteIP))
+    | summarize KnownRemoteIPs = make_set(RemoteIP) by DeviceId, InitiatingProcessFileName
+) on DeviceId, InitiatingProcessFileName
+| where isnull(KnownRemoteIPs) or not(set_has_element(KnownRemoteIPs, RemoteIP))
+| extend GeoInfo = geo_info_from_ip_address(RemoteIP)
+| extend Country = tostring(parse_json(GeoInfo).country)
+| extend DataSentKB = coalesce(BytesSent, 0) / 1024  // Changed from SentBytes to BytesSent for API compatibility
+| where DataSentKB > 500
+| project
+    Timestamp,
+    DeviceName,
+    InitiatingProcessAccountName,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    RemoteIP,
+    RemotePort,
+    Country,
+    Protocol,
+    DataSent = DataSentKB,
+    LocalIP,
+    ReportId = hash_sha256(strcat(DeviceName, RemoteIP, InitiatingProcessFileName, tostring(Timestamp)))

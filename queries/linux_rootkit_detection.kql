@@ -1,0 +1,53 @@
+// DESCRIPTION:
+// Detection of potential Linux rootkit installation or kernel module manipulation activity.
+// TECHNICAL:
+// This alert identifies suspicious usage of kernel module management commands (insmod, modprobe, rmmod) or access to sensitive kernel information files (/proc/modules, /proc/kallsyms). Legitimate activity related to known hardware drivers =~ nvidia or virtualisation software is excluded.
+// MITRE_ATTACK:
+// T1014 (Rootkit), T1547.006 (Kernel Modules and Extensions), T1215 (Kernel Modules and Extensions)
+// IMPACT:
+// Attackers may be installing kernel-level rootkits or malicious modules that can hide processes, files, and network connections while maintaining persistent access.
+// REMEDIATION:
+// Isolate the affected system, investigate the specific kernel module activity, verify module authenticity, and consider a clean OS reinstallation if a rootkit is confirmed.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
+DeviceProcessEvents
+| where Timestamp > timeWindow
+| where DeviceProcessEvents.Timestamp > timeWindow
+| where FileName in~ (
+    "insmod", 
+    "modprobe", 
+    "rmmod", 
+    "modinfo", 
+    "lsmod", 
+    "depmod", 
+    "init_module", 
+    "finit_module"
+)
+or ProcessCommandLine has_any (
+    "/proc/modules", 
+    "/proc/kallsyms", 
+    "/proc/kcore", 
+    "/boot/System.map", 
+    "/sys/kernel/"
+)
+| where ProcessCommandLine !has_any ("nvidia", "virtualbox", "vmware", "vagrant")
+| where not(InitiatingProcessFolderPath has_any (
+    "/usr/lib/apt/", 
+    "/usr/bin/dpkg", 
+    "/usr/bin/apt", 
+    "/usr/bin/yum"
+))
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    ProcessCommandLine,
+    FileName,
+    FolderPath,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessAccountName,
+    ReportId = hash_sha256(strcat(DeviceName, FileName, ProcessCommandLine, tostring(Timestamp)))
