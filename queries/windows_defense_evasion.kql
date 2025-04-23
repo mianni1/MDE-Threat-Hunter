@@ -1,0 +1,48 @@
+DeviceProcessEvents
+| where DeviceProcessEvents.Timestamp > ago(24h)
+// Removed OSPlatform filter and relying on Windows-specific commands instead
+| where (
+    DeviceProcessEvents.ProcessCommandLine has_any(
+        "sc stop WinDefend",
+        "sc config WinDefend start=disabled",
+        "Set-MpPreference -DisableRealtimeMonitoring",
+        "New-ItemProperty -Path",
+        "Add-MpPreference -ExclusionPath",
+        "Add-MpPreference -ExclusionProcess",
+        "Add-MpPreference -ExclusionExtension",
+        "powershell -ep bypass",
+        "powershell -exec bypass",
+        "-ExecutionPolicy Bypass",
+        "-WindowStyle Hidden",
+        "reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender",
+        "reg delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run /v SecurityHealth",
+        "bcdedit /set",
+        "schtasks /change",
+        "vssadmin delete shadows",
+        "wevtutil cl",
+        "/noprofile",
+        "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v EnableLUA /t REG_DWORD /d 0",
+        "taskkill /f /im MsMpEng.exe",
+        "auditpol /set /category:\"System\""
+    )
+)
+| where not(DeviceProcessEvents.InitiatingProcessFolderPath has_any(
+    "\\Program Files\\Microsoft Security Client\\",
+    "\\Program Files\\Windows Defender\\",
+    "\\Program Files\\Microsoft Defender\\",
+    "\\Program Files (x86)\\Microsoft Security Client\\",
+    "\\MDM\\",
+    "\\ConfigMgr\\"
+))
+| project
+    DeviceProcessEvents.Timestamp,
+    DeviceProcessEvents.DeviceName,
+    DeviceProcessEvents.AccountName,
+    DeviceProcessEvents.AccountDomain,
+    DeviceProcessEvents.FileName,
+    DeviceProcessEvents.ProcessCommandLine,
+    DeviceProcessEvents.ProcessId,
+    DeviceProcessEvents.InitiatingProcessFileName,
+    DeviceProcessEvents.InitiatingProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessFolderPath,
+    ReportId=hash(strcat(DeviceProcessEvents.DeviceName, DeviceProcessEvents.ProcessCommandLine))

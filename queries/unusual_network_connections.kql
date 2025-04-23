@@ -1,0 +1,49 @@
+// Query to detect unusual network connections
+// Author: MDE Threat Hunter Team
+// Last Updated: 2025-04-20
+
+// Look for unusual outbound network connections that might indicate C2 or data exfiltration
+DeviceNetworkEvents
+| where DeviceNetworkEvents.Timestamp > ago(24h)
+| where DeviceNetworkEvents.ActionType == "ConnectionSuccess"
+| where DeviceNetworkEvents.RemotePort in (22, 23, 445, 1433, 3389, 4444, 5800, 5900, 8080, 8443) or DeviceNetworkEvents.RemotePort >= 6000
+| where DeviceNetworkEvents.InitiatingProcessFileName !in~ ("chrome.exe", "msedge.exe", "firefox.exe", "safari.exe", 
+                                       "iexplore.exe", "opera.exe", "brave.exe", "outlook.exe", 
+                                       "teams.exe", "w3wp.exe", "httpd.exe", "nginx.exe")
+| where DeviceNetworkEvents.RemoteIP !in (
+    // Exclude known legitimate IPs - replace with your own allow list
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", // RFC1918 private addresses
+    "203.0.113.0/24", // Documentation addresses
+    "127.0.0.0/8"     // Localhost
+)
+| where not(ipv4_is_private(DeviceNetworkEvents.RemoteIP))
+| extend GeoIPInfo = geo_info_from_ip_address(DeviceNetworkEvents.RemoteIP)
+| extend Country = tostring(parse_json(GeoIPInfo).country), 
+         State = tostring(parse_json(GeoIPInfo).state),
+         City = tostring(parse_json(GeoIPInfo).city)
+| extend AbnormalPort = case(
+    DeviceNetworkEvents.RemotePort == 22, "SSH",
+    DeviceNetworkEvents.RemotePort == 23, "Telnet",
+    DeviceNetworkEvents.RemotePort == 445, "SMB",
+    DeviceNetworkEvents.RemotePort == 1433, "MSSQL",
+    DeviceNetworkEvents.RemotePort == 3389, "RDP",
+    DeviceNetworkEvents.RemotePort == 4444, "Common backdoor",
+    DeviceNetworkEvents.RemotePort == 5800, "VNC",
+    DeviceNetworkEvents.RemotePort == 5900, "VNC",
+    "High port"
+)
+| project
+    DeviceNetworkEvents.Timestamp,
+    DeviceNetworkEvents.DeviceName,
+    DeviceNetworkEvents.LocalIP,
+    DeviceNetworkEvents.LocalPort,
+    DeviceNetworkEvents.RemoteIP,
+    DeviceNetworkEvents.RemotePort,
+    AbnormalPort,
+    Country,
+    DeviceNetworkEvents.InitiatingProcessFileName,
+    DeviceNetworkEvents.InitiatingProcessCommandLine,
+    DeviceNetworkEvents.InitiatingProcessFolderPath,
+    DeviceNetworkEvents.InitiatingProcessAccountName,
+    ReportId=hash(strcat(tostring(DeviceNetworkEvents.Timestamp), DeviceNetworkEvents.DeviceName, DeviceNetworkEvents.RemoteIP, tostring(DeviceNetworkEvents.RemotePort)))
+| order by DeviceNetworkEvents.Timestamp desc

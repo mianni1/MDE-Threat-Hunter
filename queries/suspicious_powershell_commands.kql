@@ -1,0 +1,46 @@
+// Detect suspicious PowerShell command execution with sophisticated detection for obfuscation and encoded commands
+DeviceProcessEvents
+| where DeviceProcessEvents.Timestamp > ago(24h)
+| where DeviceProcessEvents.FileName in~ ("powershell.exe", "pwsh.exe", "powershell_ise.exe")
+| extend CommandLine = DeviceProcessEvents.ProcessCommandLine
+| extend EncodedCommand = extract(@"(?i)-[eE][ncodema]*\s+([A-Za-z0-9+/=]+)", 1, CommandLine)
+| extend Flags = array_sort_asc(extract_all(@"(?i)-(\w+)", CommandLine))
+| extend HasEncodedCommand = isnotempty(EncodedCommand)
+| extend HasHiddenWindow = array_index_of(Flags, "w") != -1 or array_index_of(Flags, "windowstyle") != -1
+| extend HasNonInteractive = array_index_of(Flags, "noni") != -1 or array_index_of(Flags, "noninteractive") != -1
+| extend HasNoProfile = array_index_of(Flags, "nop") != -1 or array_index_of(Flags, "noprofile") != -1
+| extend HasBypass = array_index_of(Flags, "ep") != -1 or array_index_of(Flags, "executionpolicy") != -1
+| extend HasCommand = array_index_of(Flags, "c") != -1 or array_index_of(Flags, "command") != -1
+| extend HasSuspiciousDownload = CommandLine has_any("WebClient", "DownloadFile", "DownloadString", "DownloadData", "WebRequest", "Invoke-WebRequest", 
+    "wget", "curl", "Net.Webclient", "Start-BitsTransfer")
+| extend HasSuspiciousExecution = CommandLine has_any("IEX", "Invoke-Expression", "Invoke-Command", "&", "Invoke-Item", "Invoke-RestMethod")
+| extend HasReflection = CommandLine has_any("[System.Reflection.Assembly]::Load", "LoadWithPartialName", "Assembly.Load", "LoadFrom", "Load()")
+| extend HasCreationMethods = CommandLine has_any("New-Object", "CreateInstance", "GetConstructor", "start-process", 
+    "Start-Job", "Invoke-WmiMethod", "Get-WmiObject", "New-Service", "Create")
+| extend HasProcessDumping = CommandLine has_any("MiniDump", "processdump", "procdump", "Out-MiniDump", "LSASS", "comsvcs.dll")
+| extend HasCredentialAccess = CommandLine has_any("Get-Credential", "GetNetworkCredential", "PasswordVault", "Credentials", 
+    "Password", "SecureString", "ConvertTo-SecureString", "PSCredential")
+| extend HasPersistence = CommandLine has_any("ScheduledTask", "New-Service", "WMI EventConsumer", "New-ScheduledTaskAction", "Registry", "HKCU:", "HKLM:")
+| extend SuspiciousFlags = array_sort_asc(pack_array(HasEncodedCommand, HasHiddenWindow, HasNonInteractive, HasNoProfile, 
+    HasBypass, HasSuspiciousDownload, HasSuspiciousExecution, HasReflection, HasCreationMethods, HasProcessDumping, HasCredentialAccess, HasPersistence))
+| extend SuspiciousScore = array_sum(SuspiciousFlags)
+| where SuspiciousScore >= 2 or HasEncodedCommand == true
+| project
+    DeviceProcessEvents.Timestamp,
+    DeviceProcessEvents.DeviceName,
+    DeviceProcessEvents.AccountName,
+    CommandLine,
+    SuspiciousScore,
+    HasEncodedCommand,
+    HasHiddenWindow, 
+    HasNoProfile,
+    HasBypass,
+    HasSuspiciousDownload,
+    HasSuspiciousExecution,
+    HasReflection,
+    HasProcessDumping,
+    HasCredentialAccess,
+    DeviceProcessEvents.InitiatingProcessFileName,
+    DeviceProcessEvents.InitiatingProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessParentFileName,
+    ReportId=hash(strcat(DeviceProcessEvents.DeviceName, DeviceProcessEvents.AccountName, CommandLine))

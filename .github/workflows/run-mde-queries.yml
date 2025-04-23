@@ -1,0 +1,320 @@
+name: Run MDE Advanced Hunting Queries
+run-name: "MDE Queries - ${{ github.event.inputs.lookback_hours || '24' }}h ${{ github.event.inputs.query_filter != '' && format('Filter: {0}', github.event.inputs.query_filter) || '' }} (${{ github.event_name }})"
+
+on:
+  push:
+    branches: [Staging]
+  schedule:
+    - cron: '0 */6 * * *'  # Run every 6 hours
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: 'Lookback period in hours'
+        required: false
+        default: '24'
+        type: choice
+        options: ['6', '12', '24', '48', '72', '168']
+      query_filter:
+        description: 'Filter queries by name pattern (leave empty for all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
+# Global environment variables
+env:
+  CACHE_KEY_DATE: "2025-04-22" # Update periodically to refresh long-term caches
+
+jobs:
+  run-queries:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    name: Execute MDE Hunting Queries
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Create required directories
+      - name: Setup directories
+        shell: bash
+        run: |
+          mkdir -p results .github/security logs
+      
+      # Advanced multi-layer caching strategy
+      # 1. Long-term cache for PowerShell binaries
+      - name: Cache PowerShell binaries
+        id: cache-pwsh-bin
+        uses: actions/cache@v3
+        with:
+          path: /usr/bin/pwsh
+          key: ${{ runner.os }}-pwsh-bin-${{ env.CACHE_KEY_DATE }}
+      
+      # 2. Medium-term cache for PowerShell modules
+      - name: Cache PowerShell modules
+        id: cache-pwsh-modules
+        uses: actions/cache@v3
+        with:
+          path: ~/.local/share/powershell/Modules
+          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
+          restore-keys: |
+            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-modules-
+      
+      # 3. Short-term cache for query results
+      - name: Cache query results
+        id: cache-query-results
+        uses: actions/cache@v3
+        with:
+          path: |
+            results
+            .github/security
+          key: ${{ runner.os }}-query-results-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-query-results-
+      
+      # Check disk space and cleanup if needed
+      - name: Manage disk space
+        shell: bash
+        run: |
+          # Disk cleanup logic (masked outputs)
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.csv" -mtime +14 -delete
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.html" -mtime +14 -delete
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.json" -mtime +14 -delete
+          find $GITHUB_WORKSPACE -path "*/.github/security/*" -type f -name "*.sarif" -mtime +30 -delete
+          find /tmp -type f -mtime +1 -delete 2>/dev/null || true
+          echo "disk_status=OK" >> $GITHUB_OUTPUT
+
+      # Check PowerShell and install/update if needed
+      - name: Setup PowerShell
+        id: pwsh_setup
+        shell: bash
+        run: |
+          # Check if PowerShell is installed or properly cached
+          if [ "${{ steps.cache-pwsh-bin.outputs.cache-hit }}" == "true" ] && command -v pwsh &> /dev/null; then
+            PWSH_VERSION=$(pwsh --version | awk '{print $2}')
+            echo "PowerShell found in cache (v$PWSH_VERSION)"
+            echo "version=$PWSH_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Installing PowerShell..."
+            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update -qq
+            sudo apt-get install -y powershell
+            rm packages-microsoft-prod.deb
+            
+            PWSH_VERSION=$(pwsh --version | awk '{print $2}')
+            echo "PowerShell installed (v$PWSH_VERSION)"
+            echo "version=$PWSH_VERSION" >> $GITHUB_OUTPUT
+          fi
+      
+      # Check and update PowerShell modules
+      - name: Manage PowerShell modules
+        shell: pwsh
+        run: |
+          # Configure PSGallery
+          if (-not (Get-PSRepository -Name PSGallery).InstallationPolicy -eq 'Trusted') {
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          }
+          
+          # Define required modules with version checking
+          $requiredModules = @(
+            @{ Name = "Microsoft.Graph.Security"; MinVersion = "2.0.0" },
+            @{ Name = "PSWriteHTML"; MinVersion = "0.0.180" },
+            @{ Name = "ImportExcel"; MinVersion = "7.4.0" }
+          )
+          
+          foreach ($module in $requiredModules) {
+            $existingModule = Get-Module -ListAvailable -Name $module.Name | 
+              Sort-Object Version -Descending | Select-Object -First 1
+            
+            if ($existingModule) {
+              $currentVersion = $existingModule.Version
+              Write-Host "$($module.Name) module found (v$currentVersion)"
+              
+              # Check if update is needed
+              try {
+                $latestModule = Find-Module -Name $module.Name -ErrorAction Stop
+                $latestVersion = $latestModule.Version
+                
+                if ($latestVersion -gt $currentVersion) {
+                  Write-Host "Updating $($module.Name) from v$currentVersion to v$latestVersion"
+                  Update-Module -Name $module.Name -Force
+                  Write-Host "$($module.Name) module updated to v$latestVersion"
+                } else {
+                  Write-Host "$($module.Name) module v$currentVersion is current (latest: v$latestVersion)"
+                }
+              } catch {
+                Write-Host "Warning: Could not check for $($module.Name) updates: $_"
+              }
+            } else {
+              # Module not found, install it
+              Write-Host "Installing $($module.Name) module..."
+              Install-Module -Name $module.Name -Force -Scope CurrentUser
+              $installedVersion = (Get-Module -ListAvailable -Name $module.Name | 
+                Sort-Object Version -Descending | Select-Object -First 1).Version
+              Write-Host "$($module.Name) module installed (v$installedVersion)"
+            }
+          }
+          
+          # Module cache statistics
+          $modulePath = "$HOME/.local/share/powershell/Modules"
+          if (Test-Path $modulePath) {
+            $size = (Get-ChildItem $modulePath -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+            Write-Host "PowerShell module cache size: $([Math]::Round($size, 2)) MB"
+          }
+      
+      # Load API credentials
+      - name: Load credentials
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
+          MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
+          MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+      
+      # Execute MDE queries
+      - name: Run MDE queries
+        id: run_queries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          
+          # Get parameters
+          $lookbackHours = '${{ github.event.inputs.lookback_hours }}' 
+          $lookbackHours = if ($lookbackHours -and $lookbackHours -ne '') { $lookbackHours } else { '24' }
+          $lookbackDays = [Math]::Ceiling($lookbackHours / 24)
+          $queryFilter = '${{ github.event.inputs.query_filter }}'
+          
+          Write-Host "Running queries with $lookbackHours hours lookback"
+          if ($queryFilter) {
+            Write-Host "Filtering queries by pattern: $queryFilter"
+          }
+          
+          # Get all query files with optional filtering
+          $queryFiles = Get-ChildItem -Path "queries" -Filter "*.kql"
+          if ($queryFilter) {
+            $queryFiles = $queryFiles | Where-Object { $_.BaseName -like "*$queryFilter*" }
+          }
+          
+          Write-Host "Found $($queryFiles.Count) queries to execute"
+          
+          # Track findings
+          $totalFindings = 0
+          $findingSummary = @()
+          
+          foreach ($queryFile in $queryFiles) {
+            $queryName = $queryFile.BaseName
+            Write-Host "Executing query: $queryName"
+            
+            # Load and adjust query time parameters
+            $query = Get-Content -Path $queryFile.FullName -Raw
+            $query = $query -replace 'let\s+lookback_days\s+=\s+\d+;', "let lookback_days = $lookbackDays;"
+            $query = $query -replace 'let\s+recent_window\s+=\s+\d+d;', "let recent_window = 1d;"
+            $query = $query -replace 'ago\(24h\)', "ago($($lookbackHours)h)"
+            $query = $query -replace 'ago\(\d+h\)', "ago($($lookbackHours)h)"
+            
+            # Execute query
+            $outputPath = "results/$queryName.csv"
+            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+            
+            # Process results
+            if (Test-Path $outputPath) {
+              $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
+              if ($results -and $results.Count -gt 0) {
+                $resultCount = $results.Count
+                $totalFindings += $resultCount
+                
+                # Determine severity based on query type
+                $severity = "Medium" # default
+                if ($queryName -match "(credential_dumping|defense_evasion|ransomware|malware|privilege|lateral_movement)") {
+                  $severity = "High"
+                } elseif ($queryName -match "(suspicious|anomalous)") {
+                  $severity = "Medium"
+                } else {
+                  $severity = "Low"
+                }
+                
+                # Record finding
+                $findingSummary += [PSCustomObject]@{
+                  QueryName = $queryName
+                  Count = $resultCount
+                  Severity = $severity
+                  Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+                }
+                
+                Write-Host "Found $resultCount results for query $queryName (Severity: $severity)"
+              } else {
+                Write-Host "No findings for query $queryName"
+              }
+            } else {
+              Write-Warning "Query execution failed or output file not created for $queryName"
+            }
+          }
+          
+          # Save findings summary
+          if ($findingSummary.Count -gt 0) {
+            $findingSummary | ConvertTo-Json -Depth 3 | Out-File -FilePath "results/finding_summary.json"
+            $findingSummary | Export-Csv -Path "results/findings.csv" -NoTypeInformation
+            
+            Write-Host "Total findings across all queries: $totalFindings"
+            echo "has_findings=true" >> $env:GITHUB_OUTPUT
+            echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No findings detected in any of the queries"
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+          }
+      
+      # Generate comprehensive report
+      - name: Generate reports
+        shell: pwsh
+        run: |
+          $sarifFile = "results/mde-security-findings.sarif"
+          
+          # Generate HTML report
+          ./scripts/generate-report.ps1 -InputPath "results" -OutputPath "results/MDE-Threat-Report.html" -ReportTitle "MDE Advanced Hunting Results" -SecurityAlertPath $sarifFile
+          
+          # Generate Excel report if module is available
+          if (Get-Module -ListAvailable ImportExcel) {
+            try {
+              $findings = Get-Content -Raw "results/finding_summary.json" -ErrorAction SilentlyContinue | ConvertFrom-Json
+              if ($findings) {
+                $findings | Export-Excel -Path "results/MDE-Findings.xlsx" -WorksheetName "Findings" -TableName "MDEFindings" -AutoSize -FreezeTopRow
+              }
+            } catch {
+              Write-Warning "Error generating Excel report: $_"
+            }
+          }
+      
+      # Upload all results as single artifact
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mde-hunting-results
+          path: results/
+          retention-days: 30
+      
+      # Upload to GitHub Security (enabled now that code scanning is on)
+      - name: Upload to GitHub Security
+        if: steps.run_queries.outputs.has_findings == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/mde-security-findings.sarif
+          category: mde_hunting
+      
+      # Archive SARIF with date stamp
+      - name: Archive SARIF
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: bash
+        run: |
+          cp results/mde-security-findings.sarif .github/security/mde-findings-$(date +%Y%m%d).sarif

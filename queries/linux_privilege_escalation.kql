@@ -1,0 +1,49 @@
+DeviceProcessEvents
+| where DeviceProcessEvents.Timestamp > ago(24h)
+// Removed OSPlatform filter and relying on Linux-specific commands instead
+| where DeviceProcessEvents.FileName in (
+    "sudo", 
+    "su", 
+    "pkexec", 
+    "doas", 
+    "bash", 
+    "sh", 
+    "ksh", 
+    "zsh", 
+    "csh",
+    "perl", 
+    "python", 
+    "ruby"
+)
+| where DeviceProcessEvents.ProcessCommandLine has_any(
+    "chmod u+s", 
+    "setuid", 
+    "setgid", 
+    "chown root",
+    "passwd", 
+    "shadow", 
+    "/etc/sudoers",
+    "visudo", 
+    "/etc/crontab", 
+    "/etc/cron.d/",
+    "LD_PRELOAD",
+    "capabilities", 
+    "cap_set",
+    "usermod -G sudo",
+    "usermod -G wheel",
+    "usermod -G admin",
+    "polkit",
+    "suid",
+    "sgid"
+)
+| project
+    DeviceProcessEvents.Timestamp,
+    DeviceProcessEvents.DeviceName,
+    DeviceProcessEvents.AccountName,
+    DeviceProcessEvents.AccountDomain,
+    DeviceProcessEvents.FileName, 
+    DeviceProcessEvents.ProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessFileName,
+    DeviceProcessEvents.InitiatingProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessAccountName,
+    ReportId=hash(strcat(DeviceProcessEvents.DeviceName, DeviceProcessEvents.FileName, DeviceProcessEvents.ProcessCommandLine))

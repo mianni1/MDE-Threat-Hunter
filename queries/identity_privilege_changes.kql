@@ -1,0 +1,24 @@
+DeviceEvents
+| where DeviceEvents.Timestamp > ago(24h)
+| where DeviceEvents.ActionType in ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")
+| extend ParsedFields = parse_json(DeviceEvents.AdditionalFields)
+| extend GroupName = tostring(ParsedFields.GroupName)
+| extend GroupSid = tostring(ParsedFields.GroupSid)
+| extend SubjectUserSid = tostring(ParsedFields.SubjectUserSid)
+| extend SubjectUserName = tostring(ParsedFields.SubjectUserName)
+| extend TargetUserName = tostring(ParsedFields.TargetUserName)
+| extend TargetUserSid = tostring(ParsedFields.TargetUserSid)
+| where 
+    GroupName has_any("Admin", "administrator", "Domain Admins", "Enterprise Admins", "Schema Admins", "Account Operators", "Backup Operators") or
+    GroupSid == "S-1-5-32-544" // Local Administrators
+| project
+    DeviceEvents.Timestamp,
+    DeviceEvents.DeviceName,
+    DeviceEvents.ActionType,
+    TargetUserName,
+    TargetUserSid,
+    GroupName,
+    GroupSid,
+    SubjectUserName,
+    SubjectUserSid,
+    ReportId=hash(strcat(DeviceEvents.DeviceName, TargetUserName, DeviceEvents.ActionType, GroupName))

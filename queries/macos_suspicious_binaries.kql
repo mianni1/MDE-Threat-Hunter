@@ -1,0 +1,32 @@
+DeviceProcessEvents
+| where DeviceProcessEvents.Timestamp > ago(24h)
+// Removed OSPlatform filter and relying on macOS-specific commands instead
+| where DeviceProcessEvents.InitiatingProcessCommandLine has_any(
+    "osascript -e", 
+    "curl", 
+    "wget", 
+    "nc ", 
+    "ncat ", 
+    "netcat",
+    "python -c", 
+    "perl -e", 
+    "ruby -e", 
+    "bash -c", 
+    "zsh -c",
+    "chmod +x", 
+    "launchctl load",
+    "sudo -s"
+)
+| where not(DeviceProcessEvents.InitiatingProcessFolderPath has_any("/Applications/", "/System/Library/"))
+| project
+    DeviceProcessEvents.Timestamp,
+    DeviceProcessEvents.DeviceName,
+    DeviceProcessEvents.AccountName,
+    DeviceProcessEvents.ProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessFileName,
+    DeviceProcessEvents.InitiatingProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessFolderPath,
+    DeviceProcessEvents.FileName,
+    DeviceProcessEvents.FolderPath,
+    DeviceProcessEvents.MD5,
+    ReportId=hash(strcat(DeviceProcessEvents.DeviceName, DeviceProcessEvents.FileName, DeviceProcessEvents.ProcessCommandLine))

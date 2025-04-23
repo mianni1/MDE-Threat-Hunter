@@ -1,0 +1,38 @@
+DeviceLogonEvents
+| where DeviceLogonEvents.Timestamp > ago(24h)
+// Removed OSPlatform filter
+| where DeviceLogonEvents.ActionType == "LogonSuccess"
+| where DeviceLogonEvents.LogonType in (3, 10)  // Type 3 = Network, Type 10 = RemoteInteractive
+| where DeviceLogonEvents.IsLocalAdmin == true
+| join kind=inner (
+    DeviceNetworkEvents
+    | where DeviceNetworkEvents.Timestamp > ago(24h)
+    // Removed OSPlatform filter
+    | where DeviceNetworkEvents.ActionType == "ConnectionSuccess"
+    | where DeviceNetworkEvents.RemotePort in (22, 23, 135, 139, 445, 593, 3389, 5985, 5986)
+) on DeviceId
+| where abs(datetime_diff('minute', DeviceLogonEvents.Timestamp, DeviceNetworkEvents.Timestamp)) < 5
+| extend ServiceName = case(
+    DeviceNetworkEvents.RemotePort == 22, "SSH",
+    DeviceNetworkEvents.RemotePort == 23, "Telnet",
+    DeviceNetworkEvents.RemotePort == 135, "RPC",
+    DeviceNetworkEvents.RemotePort in (139, 445), "SMB",
+    DeviceNetworkEvents.RemotePort == 593, "RPC over HTTP",
+    DeviceNetworkEvents.RemotePort == 3389, "RDP",
+    DeviceNetworkEvents.RemotePort in (5985, 5986), "WinRM",
+    "Other"
+)
+| project
+    DeviceLogonEvents.Timestamp,
+    DeviceLogonEvents.DeviceName,
+    DeviceNetworkEvents.LocalIP,
+    DeviceNetworkEvents.RemoteIP,
+    DeviceNetworkEvents.RemotePort,
+    ServiceName,
+    DeviceLogonEvents.AccountName,
+    DeviceLogonEvents.AccountDomain,
+    DeviceLogonEvents.LogonType,
+    DeviceLogonEvents.IsLocalAdmin,
+    DeviceLogonEvents.InitiatingProcessFileName,
+    DeviceLogonEvents.InitiatingProcessCommandLine,
+    ReportId=hash(strcat(DeviceLogonEvents.DeviceName, DeviceNetworkEvents.RemoteIP, DeviceLogonEvents.AccountName))

@@ -1,0 +1,55 @@
+// Detect Living Off the Land Binaries and Scripts (LOLBAS) execution
+DeviceProcessEvents
+| where DeviceProcessEvents.Timestamp > ago(24h)
+| where (
+    // Known LOLBAS binaries - Windows system binaries often abused by attackers
+    DeviceProcessEvents.FileName in~ (
+        "certutil.exe", "regsvr32.exe", "rundll32.exe", "msiexec.exe",
+        "mshta.exe", "msdt.exe", "odbcconf.exe", "regasm.exe", 
+        "regsvcs.exe", "installutil.exe", "cmstp.exe", "mavinject.exe",
+        "forfiles.exe", "scriptrunner.exe", "msbuild.exe", "appvlp.exe",
+        "presentationhost.exe", "wmic.exe", "pcwrun.exe", "diskshadow.exe",
+        "dnscmd.exe", "netsh.exe", "vssadmin.exe", "wsl.exe", "bitsadmin.exe",
+        "csvde.exe", "expand.exe", "extexport.exe", "extrac32.exe", "ieexec.exe", 
+        "makecab.exe", "nltest.exe", "syncappvpublishingserver.exe", "te.exe",
+        "desktopimgdownldr.exe", "dfsvc.exe", "diantz.exe", "dnsclientcim.dll",
+        "esentutl.exe", "eventvwr.exe", "ftp.exe", "icacls.exe"
+    )
+)
+| where not(
+    // Exclude common legitimate uses with appropriate context
+    (DeviceProcessEvents.FileName =~ "regsvr32.exe" and DeviceProcessEvents.ProcessCommandLine has_any(@"C:\Windows\System32\", @"C:\Windows\SysWOW64\")) or
+    (DeviceProcessEvents.FileName =~ "rundll32.exe" and DeviceProcessEvents.ProcessCommandLine has @"C:\Windows\System32\shell32.dll,Control_RunDLL") or
+    (DeviceProcessEvents.FileName =~ "msiexec.exe" and DeviceProcessEvents.ProcessCommandLine has_any("uninstall", "/I{", "/X{")) or
+    (DeviceProcessEvents.FileName =~ "netsh.exe" and DeviceProcessEvents.ProcessCommandLine has_any("show ", "display ", "interface ")) or
+    (DeviceProcessEvents.FileName =~ "wmic.exe" and DeviceProcessEvents.ProcessCommandLine has_any("diskdrive get", "cpu get", "os get", "computersystem get"))
+)
+| extend CommandTruncated = substring(DeviceProcessEvents.ProcessCommandLine, 0, 800)
+| extend SuspiciousFlags = case(
+    DeviceProcessEvents.FileName =~ "certutil.exe" and DeviceProcessEvents.ProcessCommandLine has_any("-urlcache", "-decode", "-encode"), "File download/encoding activity",
+    DeviceProcessEvents.FileName =~ "regsvr32.exe" and DeviceProcessEvents.ProcessCommandLine has_any("scrobj.dll", "/i:", "/s", "/u"), "Possible scriptlet execution",
+    DeviceProcessEvents.FileName =~ "rundll32.exe" and DeviceProcessEvents.ProcessCommandLine has_any("javascript:", "http:", "ftp:", ".dll,"), "Unusual DLL/URL loading",
+    DeviceProcessEvents.FileName =~ "mshta.exe" and DeviceProcessEvents.ProcessCommandLine has_any("javascript:", "vbscript:", "http:", ".hta"), "Scriptlet execution",
+    DeviceProcessEvents.FileName =~ "cmstp.exe" and DeviceProcessEvents.ProcessCommandLine has "/s", "Silent INF installation",
+    DeviceProcessEvents.FileName =~ "msbuild.exe" and DeviceProcessEvents.ProcessCommandLine has ".xml", "XML project execution",
+    DeviceProcessEvents.FileName =~ "wmic.exe" and DeviceProcessEvents.ProcessCommandLine has_any("process call create", "shadowcopy"), "Process creation/shadow copy",
+    DeviceProcessEvents.FileName =~ "bitsadmin.exe" and DeviceProcessEvents.ProcessCommandLine has_any("transfer", "download"), "File transfer",
+    DeviceProcessEvents.FileName =~ "vssadmin.exe" and DeviceProcessEvents.ProcessCommandLine has_any("delete shadows", "resize shadowstorage"), "Shadow copy deletion",
+    DeviceProcessEvents.FileName =~ "netsh.exe" and DeviceProcessEvents.ProcessCommandLine has_any("add helper", "advfirewall"), "Network configuration change",
+    "Suspicious LOLBAS tool execution"
+)
+| project
+    DeviceProcessEvents.Timestamp,
+    DeviceProcessEvents.DeviceName,
+    DeviceProcessEvents.AccountName,
+    DeviceProcessEvents.AccountDomain,
+    DeviceProcessEvents.ProcessId,
+    DeviceProcessEvents.FileName,
+    CommandTruncated,
+    SuspiciousFlags,
+    DeviceProcessEvents.InitiatingProcessFileName,
+    DeviceProcessEvents.InitiatingProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessAccountName,
+    DeviceProcessEvents.FolderPath,
+    DeviceProcessEvents.SHA256,
+    ReportId=hash(strcat(DeviceProcessEvents.DeviceName, DeviceProcessEvents.FileName, DeviceProcessEvents.ProcessCommandLine))

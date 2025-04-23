@@ -1,0 +1,300 @@
+name: Weekly Comprehensive Threat Hunting
+run-name: Weekly Hunting - ${{ github.event.inputs.lookback_days || '7' }} Day Lookback (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
+
+on:
+  push:
+    branches: [Staging]
+  schedule:
+    - cron: '0 2 * * 0'  # Run weekly on Sundays at 2:00 AM
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: 'Lookback period in days'
+        required: false
+        default: '7'
+        type: choice
+        options: ['7', '14', '30', '90']
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
+jobs:
+  run-comprehensive-hunting:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    name: Weekly Threat Hunting Analysis
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Unified environment setup with integrated disk cleanup
+      - name: Setup environment and cleanup
+        id: env_setup
+        shell: bash
+        run: |
+          # Create required directories
+          mkdir -p results/weekly-hunting .github/security logs
+
+          # Check disk usage and clean if needed
+          DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+          echo "Initial disk usage: $DISK_USAGE%"
+          
+          # Always perform basic cleanup for weekly jobs
+          # Clean old results files (older than 30 days)
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.csv" -mtime +30 -delete
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.html" -mtime +30 -delete
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.json" -mtime +30 -delete
+          find $GITHUB_WORKSPACE -path "*/.github/security/*" -type f -name "*.sarif" -mtime +90 -delete
+
+          # Advanced cleanup for high disk usage
+          if [ "$DISK_USAGE" -gt "80" ]; then
+            echo "High disk usage detected. Running advanced cleanup..."
+            chmod +x ./scripts/disk-manager.sh
+            ./scripts/disk-manager.sh standard
+            sudo apt-get clean -y
+            sudo apt-get autoremove -y
+            find /tmp -type f -mtime +1 -delete 2>/dev/null || true
+          fi
+          
+          # Critical disk usage - emergency cleanup
+          if [ "$DISK_USAGE" -gt "90" ]; then
+            echo "CRITICAL: Emergency cleanup initiated"
+            find $GITHUB_WORKSPACE -path "*/results/*" -type f -not -newermt "7 days ago" -delete
+            # Keep PowerShell module cache (will be managed by cache action)
+          fi
+          
+          echo "disk_status=OK" >> $GITHUB_OUTPUT
+
+      # Use cache for PowerShell and modules with 1 week cache invalidation
+      - name: Cache PowerShell environment
+        id: cache-pwsh-env
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.local/share/powershell
+            /usr/bin/pwsh
+          key: ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-
+
+      # Install PowerShell only if not cached
+      - name: Setup PowerShell
+        if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          if ! command -v pwsh &> /dev/null; then
+            echo "Installing PowerShell..."
+            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update -qq
+            sudo apt-get install -y powershell
+            rm packages-microsoft-prod.deb
+          fi
+          
+          # Install required PowerShell modules
+          pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; if (-not (Get-Module -ListAvailable Microsoft.Graph.Security)) { Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser }"
+
+      # Validate KQL queries 
+      - name: Validate queries
+        id: validate_queries
+        shell: pwsh
+        run: |
+          & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Query validation failed."
+            exit 1
+          }
+      
+      # Load API credentials
+      - name: Load credentials
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
+          MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
+          MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+      
+      # Execute queries
+      - name: Run hunting queries
+        id: run_queries
+        shell: pwsh
+        run: |
+          $lookbackDays = '${{ github.event.inputs.lookback_days }}' 
+          $lookbackDays = if ($lookbackDays -and $lookbackDays -ne '') { $lookbackDays } else { '7' }
+          $lookbackHours = ([int]$lookbackDays * 24).ToString()
+          Write-Host "Analyzing last $lookbackDays days ($lookbackHours hours)"
+          
+          # Get all queries
+          $allQueries = Get-ChildItem -Path "queries" -Filter "*.kql" | Select-Object -ExpandProperty Name
+          $totalFindings = 0
+          $findingSummary = @()
+          $anomalyTracking = @{ }
+          
+          foreach ($queryName in $allQueries) {
+            $queryPath = Join-Path "queries" $queryName
+            Write-Host "Running query: $queryName"
+            
+            $query = Get-Content -Path $queryPath -Raw
+            # Replace time variables
+            $query = $query -replace 'let\s+lookback_days\s+=\s+\d+;', "let lookback_days = $lookbackDays;"
+            $query = $query -replace 'let\s+recent_window\s+=\s+\d+d;', "let recent_window = 1d;"
+            $query = $query -replace 'ago\(24h\)', "ago($($lookbackDays)d)"
+            $query = $query -replace 'ago\(\d+h\)', "ago($($lookbackDays)d)"
+            
+            $outputPath = Join-Path "results/weekly-hunting" ($queryName -replace '\.kql', '.csv')
+            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+            
+            # Process results
+            $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
+            if ($results -and $results.Count -gt 0) {
+              $resultCount = $results.Count
+              $totalFindings += $resultCount
+              
+              # Determine severity based on query type
+              $severity = "Medium"
+              if ($queryName -match "(credential_dumping|defense_evasion|ransomware|malware|privilege|lateral_movement)") {
+                $severity = "High"
+              } elseif ($queryName -match "(suspicious|anomalous)") {
+                $severity = "Medium"
+              }
+              
+              $findingSummary += [PSCustomObject]@{
+                QueryName = $queryName -replace '\.kql', ''
+                Count = $resultCount
+                Severity = $severity
+              }
+              
+              # Track affected devices
+              foreach ($result in $results) {
+                if ($result.DeviceName) {
+                  if (-not $anomalyTracking.ContainsKey($result.DeviceName)) {
+                    $anomalyTracking[$result.DeviceName] = @{ 
+                      TotalFindings = 0
+                      DetectionTypes = @{ }
+                    }
+                  }
+                  
+                  $anomalyTracking[$result.DeviceName].TotalFindings += 1
+                  $detectionType = $queryName -replace '\.kql', ''
+                  
+                  if (-not $anomalyTracking[$result.DeviceName].DetectionTypes.ContainsKey($detectionType)) {
+                    $anomalyTracking[$result.DeviceName].DetectionTypes[$detectionType] = 0
+                  }
+                  $anomalyTracking[$result.DeviceName].DetectionTypes[$detectionType] += 1
+                }
+              }
+            }
+          }
+          
+          # Identify suspicious devices (multiple detection types)
+          $suspiciousDevices = @()
+          foreach ($device in $anomalyTracking.Keys) {
+            # Skip devices with missing or empty names
+            if ([string]::IsNullOrWhiteSpace($device)) {
+              continue
+            }
+            
+            if ($anomalyTracking[$device].DetectionTypes.Count -gt 1) {
+              # Calculate risk score with more nuanced formula
+              $highSeverityCount = ($anomalyTracking[$device].DetectionTypes.Keys | 
+                Where-Object { $_ -match "(credential_dumping|defense_evasion|ransomware|malware|privilege)" }).Count
+              
+              # Weight high severity detections more heavily
+              $riskScore = [Math]::Min(100, 35 + 
+                ($anomalyTracking[$device].DetectionTypes.Count * 10) + 
+                ($highSeverityCount * 15))
+                
+              $suspiciousDevices += [PSCustomObject]@{
+                DeviceName = $device
+                DetectionCount = $anomalyTracking[$device].TotalFindings
+                DetectionTypes = $anomalyTracking[$device].DetectionTypes.Count
+                HighSeverityTypes = $highSeverityCount
+                RiskScore = $riskScore
+              }
+            }
+          }
+          
+          # Save findings
+          if ($findingSummary.Count -gt 0) {
+            $findingSummary | ConvertTo-Json | Out-File -FilePath "results/weekly-hunting/finding_summary.json"
+            $findingSummary | Select-Object QueryName, Count, Severity | 
+              Export-Csv -Path "results/weekly-hunting/weekly_threat_hunting_summary.csv" -NoTypeInformation
+            
+            # Save suspicious devices if found
+            if ($suspiciousDevices.Count -gt 0) {
+              $suspiciousDevices | ConvertTo-Json | Out-File -FilePath "results/weekly-hunting/suspicious_devices.json"
+              $suspiciousDevices | Export-Csv -Path "results/weekly-hunting/suspicious_devices_summary.csv" -NoTypeInformation
+            }
+            
+            # Generate reports
+            $sarifFile = "results/weekly-hunting/weekly-security-findings.sarif"
+            ./scripts/generate-report.ps1 -InputPath "results/weekly-hunting" -OutputPath "results/weekly-hunting/weekly_threat_report.html" -ReportTitle "Weekly Threat Hunting Report" -SecurityAlertPath $sarifFile
+            
+            # Set outputs
+            echo "has_findings=true" >> $env:GITHUB_OUTPUT
+            echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+            if ($suspiciousDevices.Count -gt 0) {
+              echo "suspicious_device_count=$($suspiciousDevices.Count)" >> $env:GITHUB_OUTPUT
+            }
+          } else {
+            # No findings - create blank report
+            "<h1>Weekly Threat Hunting Report</h1><p>No security findings detected in the past $lookbackDays days</p><p>Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm')</p>" |
+              Out-File -FilePath "results/weekly-hunting/weekly_threat_report.html"
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+          }
+
+      # Upload all results together - no need for conditional uploads
+      - name: Upload artifacts & security findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-threat-hunting
+          path: results/weekly-hunting/
+          retention-days: 90
+      
+      # Upload to GitHub Security (enabled now that code scanning is on)
+      - name: Upload to GitHub Security
+        if: steps.run_queries.outputs.has_findings == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/weekly-hunting/weekly-security-findings.sarif
+          category: weekly_hunting
+      
+      # Archive SARIF for history
+      - name: Archive SARIF
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: bash
+        run: cp results/weekly-hunting/weekly-security-findings.sarif .github/security/weekly-findings-$(date +%Y%m%d).sarif
+      
+      # Send summary to 1Password
+      - name: Record summary
+        uses: 1password/load-secrets-action@v1
+        with:
+          operation: "op item create"
+          export-env: false
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_WRITE }}
+          TITLE: "Weekly Threat Hunting Report - $(date +%Y-%m-%d)"
+          VAULT: "Security Automation"
+          CATEGORY: "Secure Note"
+          NOTESPLAIN: |
+            Weekly comprehensive threat hunting summary
+            
+            Date: $(date)
+            Run ID: ${{ github.run_id }}
+            Lookback Period: ${{ github.event.inputs.lookback_days || '7' }} days
+            Findings detected: ${{ steps.run_queries.outputs.has_findings == 'true' && 'Yes' || 'No' }}
+            ${{ steps.run_queries.outputs.has_findings == 'true' && format('Number of findings: {0}', steps.run_queries.outputs.total_findings) || 'No security issues detected in the analysis period.' }}
+            ${{ steps.run_queries.outputs.suspicious_device_count && format('CRITICAL: {0} devices show signs of potential compromise', steps.run_queries.outputs.suspicious_device_count) || '' }}
+            
+            Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

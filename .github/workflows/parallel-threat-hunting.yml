@@ -1,0 +1,484 @@
+name: Parallel Threat Hunting
+run-name: Parallel Hunting - ${{ github.event.inputs.lookback_days || '7' }} Day Lookback (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
+
+on:
+  push:
+    branches: [Staging]
+  schedule:
+    - cron: '0 2 * * 0'  # Run weekly on Sundays at 2:00 AM
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: 'Lookback period in days'
+        required: false
+        default: '7'
+        type: choice
+        options: ['7', '14', '30', '90']
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
+# Global environment variables
+env:
+  CACHE_KEY_DATE: "2025-04-22" # Update periodically to refresh long-term caches
+
+jobs:
+  # Main environment preparation job
+  prepare-environment:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    name: Prepare Hunting Environment
+    runs-on: [self-hosted, Linux, X64]
+    outputs:
+      matrix: ${{ steps.prepare_groups.outputs.matrix }}
+      env_setup: ${{ steps.env_setup.outcome }}
+      pwsh_version: ${{ steps.pwsh_check.outputs.version }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Comprehensive environment setup with integrated disk cleanup
+      - name: Setup environment
+        id: env_setup
+        shell: bash
+        run: |
+          # Create required directories
+          mkdir -p results/{parallel-hunting,combined} .github/security logs
+          
+          # Disk cleanup logic (masked outputs)
+          
+          # Clean old files
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.csv" -mtime +30 -delete
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.html" -mtime +30 -delete
+          find $GITHUB_WORKSPACE -path "*/results/*" -type f -name "*.json" -mtime +30 -delete
+          find $GITHUB_WORKSPACE -path "*/.github/security/*" -type f -name "*.sarif" -mtime +90 -delete
+          
+          # Advanced cleanup if needed
+          if [ "$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')" -gt "80" ]; then
+            echo "High disk usage detected. Running advanced cleanup..."
+            chmod +x ./scripts/disk-manager.sh
+            ./scripts/disk-manager.sh standard
+            sudo apt-get clean -y
+            sudo apt-get autoremove -y
+            find /tmp -type f -mtime +1 -delete 2>/dev/null || true
+          fi
+          
+          echo "disk_status=OK" >> $GITHUB_OUTPUT
+
+      # Advanced multi-layer caching
+      # 1. Long-term stable cache for PowerShell binaries
+      - name: Cache PowerShell binaries
+        id: cache-pwsh-bin
+        uses: actions/cache@v3
+        with:
+          path: /usr/bin/pwsh
+          key: ${{ runner.os }}-pwsh-bin-${{ env.CACHE_KEY_DATE }}
+      
+      # 2. Medium-term cache for PowerShell modules
+      - name: Cache PowerShell modules
+        id: cache-pwsh-modules
+        uses: actions/cache@v3
+        with:
+          path: ~/.local/share/powershell/Modules
+          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
+          restore-keys: |
+            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-modules-
+      
+      # 3. Short-term cache for temporary query results
+      - name: Cache query results
+        id: cache-query-results
+        uses: actions/cache@v3
+        with:
+          path: |
+            results/parallel-hunting
+            .github/security
+          key: ${{ runner.os }}-query-results-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-query-results-
+
+      # Check PowerShell and install/update if needed
+      - name: Check PowerShell
+        id: pwsh_check
+        shell: bash
+        run: |
+          # PowerShell is available (version masked)
+          if command -v pwsh &> /dev/null; then
+            echo "pwsh_status=OK" >> $GITHUB_OUTPUT
+          else
+            echo "pwsh_status=Missing" >> $GITHUB_OUTPUT
+          fi
+      
+      # Check and update PowerShell modules if needed
+      - name: Manage PowerShell modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          
+          # Configure PSGallery
+          if (-not (Get-PSRepository -Name PSGallery).InstallationPolicy -eq 'Trusted') {
+            Write-Host "Setting PSGallery as trusted repository"
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          }
+          
+          # Required modules with version checking
+          $requiredModules = @(
+            @{
+              Name = "Microsoft.Graph.Security"
+              MinVersion = "2.0.0"
+            }
+          )
+          
+          foreach ($module in $requiredModules) {
+            $existingModule = Get-Module -ListAvailable -Name $module.Name | Sort-Object Version -Descending | Select-Object -First 1
+            
+            if ($existingModule) {
+              $currentVersion = $existingModule.Version
+              Write-Host "$($module.Name) module found (v$currentVersion)"
+              
+              # Check if update is needed
+              try {
+                $latestModule = Find-Module -Name $module.Name -ErrorAction Stop
+                $latestVersion = $latestModule.Version
+                
+                if ($latestVersion -gt $currentVersion) {
+                  Write-Host "Updating $($module.Name) from v$currentVersion to v$latestVersion"
+                  Update-Module -Name $module.Name -Force
+                  Write-Host "$($module.Name) module updated to v$latestVersion"
+                } else {
+                  Write-Host "$($module.Name) module v$currentVersion is current (latest: v$latestVersion)"
+                }
+              } catch {
+                Write-Host "Warning: Could not check for module updates: $_"
+              }
+            } else {
+              # Module not found, install it
+              Write-Host "Installing $($module.Name) module..."
+              Install-Module -Name $module.Name -Force -Scope CurrentUser
+              $installedVersion = (Get-Module -ListAvailable -Name $module.Name | Sort-Object Version -Descending | Select-Object -First 1).Version
+              Write-Host "$($module.Name) module installed (v$installedVersion)"
+            }
+          }
+          
+          # Check module cache size and report
+          $modulePath = "$HOME/.local/share/powershell/Modules"
+          if (Test-Path $modulePath) {
+            $size = (Get-ChildItem $modulePath -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+            Write-Host "PowerShell module cache size: $([Math]::Round($size, 2)) MB"
+          }
+      
+      # Validate KQL query syntax
+      - name: Validate queries
+        id: validate_queries
+        shell: pwsh
+        run: |
+          Write-Host "Validating KQL query syntax..."
+          & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Query validation failed."
+            exit 1
+          }
+      
+      # Sort queries into groups for parallel execution
+      - name: Prepare query groups
+        id: prepare_groups
+        shell: pwsh
+        run: |
+          $queries = Get-ChildItem -Path "queries" -Filter "*.kql" | Select-Object -ExpandProperty Name
+          
+          # Define logical groups by platform/threat type
+          $windowsQueries = @($queries | Where-Object { $_ -like "windows_*" })
+          $linuxQueries = @($queries | Where-Object { $_ -like "linux_*" })
+          $macosQueries = @($queries | Where-Object { $_ -like "macos_*" })
+          $otherQueries = @($queries | Where-Object { $_ -notlike "windows_*" -and $_ -notlike "linux_*" -and $_ -notlike "macos_*" })
+          
+          # Generate matrix for parallel jobs
+          $matrix = @{
+            include = @(
+              @{
+                group = 'windows'
+                group_name = 'Windows Threats'
+                queries = $windowsQueries
+              },
+              @{
+                group = 'linux'
+                group_name = 'Linux Threats'
+                queries = $linuxQueries
+              },
+              @{
+                group = 'macos'
+                group_name = 'macOS Threats'
+                queries = $macosQueries
+              },
+              @{
+                group = 'other'
+                group_name = 'General Threats'
+                queries = $otherQueries
+              }
+            )
+          } | ConvertTo-Json -Compress -Depth 5
+          
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          echo "env_setup=${{ steps.env_setup.outcome }}" >> $GITHUB_OUTPUT
+          echo "pwsh_version=${{ steps.pwsh_check.outputs.version }}" >> $GITHUB_OUTPUT
+
+  # Run queries for each platform category in parallel
+  hunt-parallel:
+    # only run if a valid matrix was generated
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')) && needs.prepare-environment.outputs.matrix != ''
+    name: Hunt - ${{ matrix.group_name }}
+    needs: prepare-environment
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 15
+    strategy:
+      matrix: ${{ fromJson(needs.prepare-environment.outputs.matrix || '{"include":[]}') }}
+      fail-fast: false
+      max-parallel: 4
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Use shared cache for PowerShell modules (initialized in prepare-environment)
+      - name: Cache PowerShell modules
+        uses: actions/cache@v3
+        with:
+          path: ~/.local/share/powershell/Modules
+          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
+          restore-keys: |
+            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-modules-
+      
+      # Create result directory
+      - name: Prepare result directory
+        shell: bash
+        run: mkdir -p results/parallel-hunting/${{ matrix.group }}
+      
+      # Load API credentials
+      - name: Load credentials
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
+          MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
+          MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+      
+      # Execute queries for this group
+      - name: Run queries
+        id: run_queries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lookbackDays = '${{ github.event.inputs.lookback_days }}' 
+          $lookbackDays = if ($lookbackDays -and $lookbackDays -ne '') { $lookbackDays } else { '7' }
+          $lookbackHours = ([int]$lookbackDays * 24).ToString()
+          
+          # Get queries for this group from matrix
+          $queryGroup = "${{ matrix.group }}"
+          $queriesJson = '${{ toJson(matrix.queries) }}'
+          $queries = $queriesJson | ConvertFrom-Json
+          
+          if (-not $queries -or $queries.Count -eq 0) {
+            Write-Host "No queries defined for group: $queryGroup"
+            echo "total_findings=0" >> $env:GITHUB_OUTPUT
+            echo "group=$queryGroup" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          
+          Write-Host "Running $($queries.Count) queries for $queryGroup platform..."
+          $groupResultDir = "results/parallel-hunting/${queryGroup}"
+          
+          # Process each query
+          $totalFindings = 0
+          $findingSummary = @()
+          foreach ($queryName in $queries) {
+            $queryPath = Join-Path "queries" $queryName
+            if (-not (Test-Path $queryPath)) {
+              Write-Host "Warning: Query file not found at $queryPath"
+              continue
+            }
+            
+            # Load and adjust query text
+            $query = Get-Content -Path $queryPath -Raw
+            
+            # Replace time variables with proper formats
+            $query = $query -replace 'let\s+lookback_days\s+=\s+\d+;', "let lookback_days = $lookbackDays;"
+            $query = $query -replace 'let\s+recent_window\s+=\s+\d+d;', "let recent_window = 1d;"
+            # Ensure timespan format in ago() is proper with unit
+            $query = $query -replace 'ago\(24h\)', "ago($($lookbackDays)d)" 
+            $query = $query -replace 'ago\(\d+h\)', "ago($($lookbackDays)d)"
+            $query = $query -replace 'ago\(\d+d\)', "ago($($lookbackDays)d)"
+
+            # Execute query and save results
+            $outputPath = Join-Path $groupResultDir ($queryName -replace '\.kql', '.csv')
+            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+            
+            # Process results
+            $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
+            if ($results -and $results.Count -gt 0) {
+              $resultCount = $results.Count
+              $totalFindings += $resultCount
+              
+              # Determine severity 
+              $severity = "Medium" # default
+              if ($queryName -match "(credential_dumping|defense_evasion|ransomware|malware|privilege|lateral_movement)") { 
+                $severity = "High" 
+              }
+              elseif ($queryName -match "(suspicious|anomalous)") { 
+                $severity = "Medium" 
+              }
+              else { 
+                $severity = "Low" 
+              }
+              
+              # Record finding
+              $findingSummary += [PSCustomObject]@{
+                QueryName = $queryName -replace '\.kql', ''
+                Count = $resultCount
+                Severity = $severity
+                Group = $queryGroup
+              }
+            }
+          }
+
+          # Save findings summary
+          if ($findingSummary.Count -gt 0) {
+            $summaryPath = Join-Path $groupResultDir "finding_summary.json"
+            $findingSummary | ConvertTo-Json | Out-File -FilePath $summaryPath
+            $findingSummary | Export-Csv -Path (Join-Path $groupResultDir "findings.csv") -NoTypeInformation
+            
+            Write-Host "Found $totalFindings findings in $queryGroup group"
+            echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No findings detected in $queryGroup group"
+            echo "total_findings=0" >> $env:GITHUB_OUTPUT
+          }
+          
+          echo "group=$queryGroup" >> $env:GITHUB_OUTPUT
+      
+      # Upload findings for this group
+      - name: Upload findings
+        if: steps.run_queries.outputs.total_findings > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: threat-hunting-results-${{ matrix.group }}
+          path: results/parallel-hunting/${{ matrix.group }}
+          retention-days: 30
+  
+  # Aggregate and report all findings
+  aggregate-results:
+    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master'))
+    name: Aggregate Results
+    needs: [prepare-environment, hunt-parallel]
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Use shared cache from prepare-environment
+      - name: Cache PowerShell modules
+        uses: actions/cache@v3
+        with:
+          path: ~/.local/share/powershell/Modules
+          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
+          restore-keys: |
+            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-modules-
+      
+      # Create output directories
+      - name: Create output directories
+        shell: bash
+        run: |
+          mkdir -p results/combined .github/security
+      
+      # Download all group artifacts
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: results/artifacts
+      
+      # Combine all findings into a single report
+      - name: Aggregate findings
+        id: aggregate
+        shell: pwsh
+        run: |
+          $outputDir = "results/combined"
+          $allSummaries = @()
+          $totalFindings = 0
+          
+          # Check for downloaded artifacts before aggregation
+          $summaryDir = "results/artifacts"
+          if (-not (Test-Path $summaryDir)) {
+              Write-Host "No artifacts found; skipping aggregation."
+              echo "has_findings=false" >> $env:GITHUB_OUTPUT
+              exit 0
+          }
+          $summaryFiles = Get-ChildItem -Path "$summaryDir" -Filter "finding_summary.json" -Recurse -ErrorAction SilentlyContinue
+          
+          if ($summaryFiles.Count -eq 0) {
+            # No findings: generate empty report
+            "<h1>Parallel Threat Hunting Report</h1><p>Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm')</p><p>No findings detected.</p>" |
+              Out-File -FilePath (Join-Path $outputDir "combined_report.html")
+            
+            @{ version = "2.1.0"; runs = @() } | ConvertTo-Json -Depth 5 |
+              Out-File (Join-Path $outputDir "combined-threat-findings.sarif")
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Aggregating findings from $($summaryFiles.Count) groups..."
+            
+            foreach ($file in $summaryFiles) {
+              $groupSummary = Get-Content -Raw -Path $file.FullName | ConvertFrom-Json
+              $allSummaries += $groupSummary
+              
+              # Sum up findings
+              $groupTotal = ($groupSummary | Measure-Object -Property Count -Sum).Sum
+              $totalFindings += $groupTotal
+            }
+            
+            # Use shared report generation script for HTML and SARIF
+            ./scripts/generate-report.ps1 \
+              -InputPath "$outputDir" \
+              -OutputPath "$outputDir/combined_report.html" \
+              -ReportTitle "Parallel Threat Hunting Report" \
+              -SecurityAlertPath "$outputDir/combined-threat-findings.sarif"
+            echo "has_findings=true" >> $env:GITHUB_OUTPUT
+            echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+          }
+      
+      # Upload combined report (always)
+      - name: Upload combined report
+        uses: actions/upload-artifact@v4
+        with:
+          name: threat-hunting-consolidated-report
+          path: results/combined/
+          retention-days: 90
+          if-no-files-found: ignore
+      
+      # Upload to GitHub Security if findings exist
+      - name: Upload to GitHub Security
+        if: steps.aggregate.outputs.has_findings == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          category: parallel_hunting
+          sarif_file: results/combined/combined-threat-findings.sarif
+      
+      # Archive SARIF to security directory
+      - name: Archive SARIF to security directory
+        if: steps.aggregate.outputs.has_findings == 'true'
+        shell: bash
+        run: |
+          cp results/combined/combined-threat-findings.sarif .github/security/parallel-findings-$(date +%Y%m%d).sarif

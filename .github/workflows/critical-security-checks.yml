@@ -1,0 +1,209 @@
+name: Critical Security Checks
+run-name: Critical Checks - ${{ github.event.inputs.lookback_hours || '6' }}h (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
+
+on:
+  push:
+    branches: [Staging]
+  schedule:
+    - cron: '0 */2 * * *'  # Run every 2 hours
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: 'Lookback period in hours'
+        required: false
+        default: '6'
+        type: choice
+        options: ['2', '4', '6', '12', '24']
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
+jobs:
+  run-critical-queries:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    name: Critical Security Monitoring
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10 # Reduced from 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Ultra minimal disk space check that won't waste time
+      - name: Quick environment setup
+        id: env_setup
+        shell: bash
+        run: |
+          # Create required directories without checking if they exist (faster)
+          mkdir -p results/critical-checks .github/security logs
+
+          # Minimal disk check for cleanup logic (values masked)
+          # Only do cleanup if critically low
+          if [ "$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')" -gt "90" ]; then
+            echo "CRITICAL: Disk space emergency - performing minimal cleanup"
+            find /tmp -type f -mtime +1 -delete 2>/dev/null || true
+            sudo apt-get clean -y
+          fi
+          
+          echo "disk_status=OK" >> $GITHUB_OUTPUT
+
+      # Specialized cache for critical checks - separate from other workflows
+      - name: Cache PowerShell environment
+        id: cache-pwsh-env
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.local/share/powershell
+            /usr/bin/pwsh
+          key: ${{ runner.os }}-pwsh-critical-${{ hashFiles('**/*.psd1') }}
+          restore-keys: |
+            ${{ runner.os }}-pwsh-critical-
+            ${{ runner.os }}-pwsh-
+
+      # Install PowerShell only if not cached
+      - name: Setup PowerShell
+        if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          if ! command -v pwsh &> /dev/null; then
+            echo "Installing PowerShell..."
+            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update -qq
+            sudo apt-get install -y powershell
+            rm packages-microsoft-prod.deb
+            
+            # Install required PowerShell modules
+            pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser"
+          fi
+      
+      # Load API credentials
+      - name: Load credentials
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
+          MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
+          MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+      
+      # Execute critical queries
+      - name: Run critical queries
+        id: run_queries
+        shell: pwsh
+        run: |
+          $lookbackHours = '${{ github.event.inputs.lookback_hours }}' 
+          $lookbackHours = if ($lookbackHours -and $lookbackHours -ne '') { $lookbackHours } else { '6' }
+          $lookbackDays = [Math]::Ceiling($lookbackHours / 24)
+          
+          # Critical security check queries list
+          $criticalQueries = @(
+            "lolbas_execution.kql",
+            "windows_credential_dumping.kql",
+            "windows_defense_evasion.kql",
+            "linux_privilege_escalation.kql",
+            "macos_malware_detection.kql",
+            "ransomware_detection.kql",
+            "anomalous_logon_behavior.kql",
+            "identity_privilege_changes.kql"
+          )
+          
+          $totalFindings = 0
+          $findingSummary = @()
+          
+          foreach ($queryName in $criticalQueries) {
+            $queryPath = Join-Path "queries" $queryName
+            if (Test-Path $queryPath) {
+              $query = Get-Content -Path $queryPath -Raw
+              
+              # Replace time variables with appropriate pattern
+              $query = $query -replace 'let\s+lookback_days\s+=\s+\d+;', "let lookback_days = $lookbackDays;"
+              $query = $query -replace 'let\s+recent_window\s+=\s+\d+d;', "let recent_window = 1d;"
+              $query = $query -replace 'ago\(24h\)', "ago($($lookbackHours)h)"
+              $query = $query -replace 'ago\(\d+h\)', "ago($($lookbackHours)h)"
+              
+              $outputPath = Join-Path "results/critical-checks" ($queryName -replace '\.kql', '.csv')
+              ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+              
+              # Process results
+              $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
+              if ($results -and $results.Count -gt 0) {
+                $resultCount = $results.Count
+                $totalFindings += $resultCount
+                Write-Host "ALERT: Found $resultCount results for critical query $queryName"
+                
+                $findingSummary += [PSCustomObject]@{
+                  QueryName = $queryName -replace '\.kql', ''
+                  Count = $resultCount
+                  Severity = "High"
+                }
+              }
+            }
+          }
+          
+          # Save findings and generate reports
+          if ($findingSummary.Count -gt 0) {
+            $findingSummary | ConvertTo-Json | Out-File -FilePath "results/critical-checks/finding_summary.json"
+            $findingSummary | Export-Csv -Path "results/critical-checks/critical_findings.csv" -NoTypeInformation
+            
+            # Generate SARIF report
+            $sarifFile = "results/critical-checks/critical-security-findings.sarif"
+            ./scripts/generate-report.ps1 -InputPath "results/critical-checks" -OutputPath "results/critical-checks/critical_report.html" -ReportTitle "Critical Security Findings" -SecurityAlertPath $sarifFile
+            
+            # Set outputs
+            echo "has_findings=true" >> $env:GITHUB_OUTPUT
+            echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+          }
+
+      # Use single artifact upload
+      - name: Upload findings
+        if: steps.run_queries.outputs.has_findings == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: critical-security-findings
+          path: results/critical-checks/
+          retention-days: 14 # Shorter retention for frequent runs
+      
+      # Upload to GitHub Security (enabled now that code scanning is on)
+      - name: Upload to GitHub Security
+        if: steps.run_queries.outputs.has_findings == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/critical-checks/critical-security-findings.sarif
+          category: critical_security
+      
+      # Archive SARIF with timestamp
+      - name: Archive SARIF
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: bash
+        run: cp results/critical-checks/critical-security-findings.sarif .github/security/critical-findings-$(date +%Y%m%d%H%M).sarif
+      
+      # Alert via 1Password if findings
+      - name: Send critical alert
+        if: steps.run_queries.outputs.has_findings == 'true'
+        uses: 1password/load-secrets-action@v1
+        with:
+          operation: "op item create"
+          export-env: false
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_WRITE }}
+          TITLE: "⚠️ CRITICAL SECURITY ALERT - $(date +%Y-%m-%d-%H%M)"
+          VAULT: "Security Automation"
+          CATEGORY: "Secure Note"
+          NOTESPLAIN: |
+            🚨 CRITICAL SECURITY FINDINGS DETECTED - IMMEDIATE INVESTIGATION REQUIRED 🚨
+            
+            Date: $(date)
+            Run ID: ${{ github.run_id }}
+            Number of findings: ${{ steps.run_queries.outputs.total_findings }}
+            
+            Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -1,0 +1,45 @@
+// Detect suspicious cloud activity including data exfiltration and unusual access patterns
+CloudAppEvents
+| where CloudAppEvents.Timestamp > ago(24h)
+| where CloudAppEvents.ActionType in~ (
+    "FileDownloaded", "FileDownloadedByUnknownIPAddress", "MassDownload", "MailItemsAccessed",
+    "MailExport", "NonOrganic-Download-IP-Generic", "AdminLoginFromNewCountry", "MailForwardingRuleSet",
+    "MailRedirectionRuleSet", "AnonymousIPUsed", "NewUserAgentForUser"
+)
+| extend ActivityParameters = todynamic(CloudAppEvents.RawEventData.ActivityParameters)
+| extend UserAgent = tostring(CloudAppEvents.RawEventData.UserAgent)
+| extend DeviceOS = extractjson("$.OS", UserAgent, typeof(string))
+| extend Browser = extractjson("$.Browser", UserAgent, typeof(string))
+| extend IPAddress = tostring(CloudAppEvents.RawEventData.IPAddress)
+| extend Country = tostring(CloudAppEvents.RawEventData.Country)
+| extend City = tostring(CloudAppEvents.RawEventData.City)
+| extend IsAnonymousProxy = tostring(CloudAppEvents.RawEventData.IsAnonymousProxy)
+| extend IsNewIPAddress = tostring(CloudAppEvents.RawEventData.IsNewIPAddress)
+| extend DownloadedFileCount = tostring(ActivityParameters.[1].Value)
+| extend RiskScore = case(
+    CloudAppEvents.ActionType has_any("MassDownload", "MailExport"), 80,
+    CloudAppEvents.ActionType has "AnonymousIPUsed" or IsAnonymousProxy == "true", 70,
+    CloudAppEvents.ActionType has "NewUserAgentForUser" and IsNewIPAddress == "true", 60,
+    CloudAppEvents.ActionType has "AdminLoginFromNewCountry", 75,
+    CloudAppEvents.ActionType has "MailForwardingRuleSet" or CloudAppEvents.ActionType has "MailRedirectionRuleSet", 85,
+    CloudAppEvents.ActionType has "FileDownloadedByUnknownIPAddress", 65,
+    50
+)
+| where RiskScore > 50
+| project
+    CloudAppEvents.Timestamp,
+    CloudAppEvents.ActionType,
+    CloudAppEvents.AccountDisplayName,
+    IPAddress,
+    Country,
+    City,
+    IsAnonymousProxy,
+    IsNewIPAddress,
+    DeviceOS,
+    Browser,
+    RiskScore,
+    CloudAppEvents.Application,
+    CloudAppEvents.ActivityType,
+    CloudAppEvents.ObjectName,
+    DownloadedFileCount,
+    ReportId=hash(strcat(CloudAppEvents.AccountDisplayName, IPAddress, CloudAppEvents.ActionType))

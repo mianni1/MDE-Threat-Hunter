@@ -1,0 +1,20 @@
+DeviceProcessEvents
+| where DeviceProcessEvents.Timestamp > ago(24h)
+// Removed OSPlatform filter and relying on Linux-specific commands instead
+| where (
+    DeviceProcessEvents.FileName in~ ("insmod", "modprobe", "rmmod", "modinfo", "lsmod", "depmod", "init_module", "finit_module") or
+    DeviceProcessEvents.ProcessCommandLine has_any("/proc/modules", "/proc/kallsyms", "/proc/kcore", "/boot/System.map", "/sys/kernel/")
+)
+| where DeviceProcessEvents.ProcessCommandLine !has_any("nvidia", "virtualbox", "vmware", "vagrant")
+| where not(DeviceProcessEvents.InitiatingProcessFolderPath has_any("/usr/lib/apt/", "/usr/bin/dpkg", "/usr/bin/apt", "/usr/bin/yum"))
+| project
+    DeviceProcessEvents.Timestamp,
+    DeviceProcessEvents.DeviceName,
+    DeviceProcessEvents.AccountName,
+    DeviceProcessEvents.ProcessCommandLine,
+    DeviceProcessEvents.FileName,
+    DeviceProcessEvents.FolderPath,
+    DeviceProcessEvents.InitiatingProcessFileName,
+    DeviceProcessEvents.InitiatingProcessCommandLine,
+    DeviceProcessEvents.InitiatingProcessAccountName,
+    ReportId=hash(strcat(DeviceProcessEvents.DeviceName, DeviceProcessEvents.FileName, DeviceProcessEvents.ProcessCommandLine))

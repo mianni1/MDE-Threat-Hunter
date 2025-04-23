@@ -1,0 +1,30 @@
+DeviceFileCertificateInfo
+| where DeviceFileCertificateInfo.Timestamp > ago(24h)
+| where DeviceFileCertificateInfo.FileName endswith ".plist"
+| where DeviceFileCertificateInfo.FolderPath has_any(
+    "/Library/LaunchAgents/",
+    "/Library/LaunchDaemons/",
+    "/System/Library/LaunchAgents/",
+    "/System/Library/LaunchDaemons/",
+    "/Users/*/Library/LaunchAgents/"
+)
+| join kind=inner (
+    DeviceFileEvents
+    | where DeviceFileEvents.Timestamp > ago(24h)
+    | where DeviceFileEvents.ActionType == "FileCreated" or DeviceFileEvents.ActionType == "FileModified"
+    | where DeviceFileEvents.FileName endswith ".plist"
+)
+on DeviceId, FileName
+| where not(DeviceFileCertificateInfo.Signer in~ ("Apple Inc.", "Apple Computer, Inc."))
+| project
+    DeviceFileEvents.Timestamp,
+    DeviceFileEvents.DeviceName,
+    DeviceFileEvents.FileName,
+    DeviceFileCertificateInfo.FolderPath,
+    DeviceFileCertificateInfo.Signer,
+    DeviceFileCertificateInfo.SignatureStatus,
+    DeviceFileEvents.ActionType,
+    DeviceFileEvents.InitiatingProcessAccountName,
+    DeviceFileEvents.InitiatingProcessCommandLine,
+    DeviceFileCertificateInfo.SHA256,
+    ReportId=hash(strcat(DeviceFileEvents.DeviceName, DeviceFileEvents.FileName, DeviceFileCertificateInfo.FolderPath))

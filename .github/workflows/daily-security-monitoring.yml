@@ -1,0 +1,234 @@
+name: Daily Security Monitoring
+run-name: Daily Monitoring - ${{ github.event.inputs.lookback_hours || '24' }}h (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
+
+on:
+  push:
+    branches: [Staging]
+  schedule:
+    - cron: '0 8 * * *'  # Run daily at 8:00 AM
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: 'Lookback period in hours'
+        required: false
+        default: '24'
+        type: choice
+        options: ['12', '24', '48', '72']
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
+jobs:
+  run-standard-queries:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    name: Daily Security Monitoring
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Unified environment setup and disk cleanup
+      - name: Setup environment
+        id: env_setup
+        shell: bash
+        run: |
+          # Create required directories
+          mkdir -p results/daily-monitoring .github/security logs
+
+          # Disk space cleanup logic (masked outputs)
+          if [ $(df -h / | awk 'NR==2 {print $5}' | sed 's/%//') -gt 80 ]; then
+            sudo apt-get clean -y
+            sudo apt-get autoremove -y
+          fi
+          
+          echo "disk_status=OK" >> $GITHUB_OUTPUT
+
+      # Use cache for PowerShell and modules
+      - name: Cache PowerShell environment
+        id: cache-pwsh-env
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.local/share/powershell
+            /usr/bin/pwsh
+          key: ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-daily
+          restore-keys: |
+            ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-
+
+      # Install PowerShell only if not cached
+      - name: Setup PowerShell
+        if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          if ! command -v pwsh &> /dev/null; then
+            echo "Installing PowerShell..."
+            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update -qq
+            sudo apt-get install -y powershell
+            rm packages-microsoft-prod.deb
+          fi
+          
+          # Install required PowerShell modules
+          pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; if (-not (Get-Module -ListAvailable Microsoft.Graph.Security)) { Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser }"
+
+      # Validate KQL queries
+      - name: Validate queries
+        id: validate_queries
+        shell: pwsh
+        run: |
+          & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Query validation failed."
+            exit 1
+          }
+      
+      # Load API credentials
+      - name: Load credentials
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
+          MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
+          MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+      
+      # Execute daily monitoring queries
+      - name: Run monitoring queries
+        id: run_queries
+        shell: pwsh
+        run: |
+          $lookbackHours = '${{ github.event.inputs.lookback_hours }}' 
+          $lookbackHours = if ($lookbackHours -and $lookbackHours -ne '') { $lookbackHours } else { '24' }
+          $lookbackDays = [Math]::Ceiling($lookbackHours / 24)
+          Write-Host "Analyzing last $lookbackHours hours ($lookbackDays days)"
+          
+          # List of standard daily monitoring queries
+          $standardQueries = @(
+            "lolbas_execution.kql",
+            "windows_credential_dumping.kql",
+            "windows_defense_evasion.kql", 
+            "windows_lateral_movement.kql",
+            "windows_persistence_mechanisms.kql",
+            "suspicious_powershell_commands.kql",
+            "linux_unusual_connections.kql",
+            "macos_persistence_mechanisms.kql",
+            "macos_suspicious_binaries.kql",
+            "anomalous_logon_behavior.kql",
+            "suspicious_cloud_activity.kql",
+            "unusual_network_connections.kql",
+            "data_exfiltration_detection.kql"
+          )
+          
+          $totalFindings = 0
+          $findingSummary = @()
+          
+          foreach ($queryName in $standardQueries) {
+            $queryPath = Join-Path "queries" $queryName
+            if (Test-Path $queryPath) {
+              Write-Host "Running query: $queryName"
+              
+              $query = Get-Content -Path $queryPath -Raw
+              # Replace time variables
+              $query = $query -replace 'let\s+lookback_days\s+=\s+\d+;', "let lookback_days = $lookbackDays;"
+              $query = $query -replace 'let\s+recent_window\s+=\s+\d+d;', "let recent_window = 1d;"
+              $query = $query -replace 'ago\(24h\)', "ago($($lookbackHours)h)"
+              $query = $query -replace 'ago\(\d+h\)', "ago($($lookbackHours)h)"
+              
+              $outputPath = Join-Path "results/daily-monitoring" ($queryName -replace '\.kql', '.csv')
+              ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+              
+              # Process results
+              $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
+              if ($results -and $results.Count -gt 0) {
+                $resultCount = $results.Count
+                $totalFindings += $resultCount
+                Write-Host "Found $resultCount results for query $queryName"
+                
+                # Determine severity
+                $severity = "Medium"
+                if ($queryName -match "(credential_dumping|defense_evasion|ransomware|malware|privilege)") {
+                  $severity = "High"
+                }
+                
+                $findingSummary += [PSCustomObject]@{
+                  QueryName = $queryName -replace '\.kql', ''
+                  Count = $resultCount
+                  Severity = $severity
+                }
+              }
+            }
+            else {
+              Write-Host "Warning: Query file $queryName not found"
+            }
+          }
+          
+          # Save findings and generate reports
+          if ($findingSummary.Count -gt 0) {
+            $findingSummary | ConvertTo-Json | Out-File -FilePath "results/daily-monitoring/finding_summary.json"
+            $findingSummary | Select-Object QueryName, Count, Severity | 
+              Export-Csv -Path "results/daily-monitoring/daily_monitoring_summary.csv" -NoTypeInformation
+              
+            $sarifFile = "results/daily-monitoring/daily-security-findings.sarif"
+            ./scripts/generate-report.ps1 -InputPath "results/daily-monitoring" -OutputPath "results/daily-monitoring/daily_report.html" -ReportTitle "Daily Security Monitoring Report" -SecurityAlertPath $sarifFile
+            
+            echo "has_findings=true" >> $env:GITHUB_OUTPUT
+            echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+          } else {
+            "<h1>Daily Security Monitoring Report</h1><p>No security findings detected in the past $lookbackHours hours</p><p>Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm')</p>" |
+              Out-File -FilePath "results/daily-monitoring/daily_report.html"
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
+          }
+
+      # Unified artifact upload
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-security-monitoring
+          path: results/daily-monitoring/
+          retention-days: 30
+          
+      # Upload to GitHub Security (enabled now that code scanning is on)
+      - name: Upload to GitHub Security
+        if: steps.run_queries.outputs.has_findings == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/daily-monitoring/daily-security-findings.sarif
+          category: daily_monitoring
+      
+      # Archive SARIF for history
+      - name: Archive SARIF
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: bash
+        run: cp results/daily-monitoring/daily-security-findings.sarif .github/security/daily-findings-$(date +%Y%m%d).sarif
+      
+      # Send summary to 1Password
+      - name: Record summary
+        uses: 1password/load-secrets-action@v1
+        with:
+          operation: "op item create"
+          export-env: false
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_WRITE }}
+          TITLE: "Daily Security Report - $(date +%Y-%m-%d)"
+          VAULT: "Security Automation"
+          CATEGORY: "Secure Note"
+          NOTESPLAIN: |
+            Daily security monitoring summary
+            
+            Date: $(date)
+            Run ID: ${{ github.run_id }}
+            Findings detected: ${{ steps.run_queries.outputs.has_findings == 'true' && 'Yes' || 'No' }}
+            ${{ steps.run_queries.outputs.has_findings == 'true' && format('Number of findings: {0}', steps.run_queries.outputs.total_findings) || 'No security issues detected in the past 24 hours.' }}
+            
+            Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

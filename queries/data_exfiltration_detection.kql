@@ -1,0 +1,37 @@
+DeviceNetworkEvents
+| where DeviceNetworkEvents.Timestamp > ago(24h)
+| where DeviceNetworkEvents.ActionType == "ConnectionSuccess"
+| where DeviceNetworkEvents.RemoteIP !has "10." and DeviceNetworkEvents.RemoteIP !has "192.168." and DeviceNetworkEvents.RemoteIP !has "172.16." and DeviceNetworkEvents.RemoteIP !has "172.17." 
+  and DeviceNetworkEvents.RemoteIP !has "172.18." and DeviceNetworkEvents.RemoteIP !has "172.19." and DeviceNetworkEvents.RemoteIP !has "172.20." and DeviceNetworkEvents.RemoteIP !has "172.21."
+  and DeviceNetworkEvents.RemoteIP !has "172.22." and DeviceNetworkEvents.RemoteIP !has "172.23." and DeviceNetworkEvents.RemoteIP !has "172.24." and DeviceNetworkEvents.RemoteIP !has "172.25." 
+  and DeviceNetworkEvents.RemoteIP !has "172.26." and DeviceNetworkEvents.RemoteIP !has "172.27." and DeviceNetworkEvents.RemoteIP !has "172.28." and DeviceNetworkEvents.RemoteIP !has "172.29."
+  and DeviceNetworkEvents.RemoteIP !has "172.30." and DeviceNetworkEvents.RemoteIP !has "172.31." and DeviceNetworkEvents.RemoteIP !has "127."
+| where DeviceNetworkEvents.InitiatingProcessFileName !in (
+    "chrome.exe", "msedge.exe", "firefox.exe", "safari.exe", "iexplore.exe", "brave.exe", "opera.exe",
+    "svchost.exe", "MsMpEng.exe", "NisSrv.exe", "OneDrive.exe", "Teams.exe", "Outlook.exe", "thunderbird.exe",
+    "github.exe", "git.exe", "slack.exe", "winstore.exe", "msteams.exe", "Dropbox.exe", "GoogleDriveFS.exe"
+)
+| join kind=leftanti (
+    DeviceNetworkEvents
+    | where DeviceNetworkEvents.Timestamp > ago(30d)
+    | where DeviceNetworkEvents.ActionType == "ConnectionSuccess"
+    | where DeviceNetworkEvents.RemoteIP !has "10." and DeviceNetworkEvents.RemoteIP !has "192.168." and DeviceNetworkEvents.RemoteIP !has "172.16." and DeviceNetworkEvents.RemoteIP !has "127."
+    | summarize FamiliarHosts = make_set(DeviceNetworkEvents.RemoteIP) by DeviceNetworkEvents.DeviceId, DeviceNetworkEvents.InitiatingProcessFileName
+) on DeviceId, InitiatingProcessFileName, RemoteIP
+| extend GeoInfo = geo_info_from_ip_address(DeviceNetworkEvents.RemoteIP)
+| extend Country = tostring(parse_json(GeoInfo).country)
+| extend DataSent = DeviceNetworkEvents.SentBytes / 1024
+| where DataSent > 500  // Looking for significant data transfer (>500KB)
+| project
+    DeviceNetworkEvents.Timestamp,
+    DeviceNetworkEvents.DeviceName,
+    DeviceNetworkEvents.InitiatingProcessAccountName,
+    DeviceNetworkEvents.InitiatingProcessFileName,
+    DeviceNetworkEvents.InitiatingProcessCommandLine,
+    DeviceNetworkEvents.RemoteIP,
+    DeviceNetworkEvents.RemotePort,
+    Country,
+    DeviceNetworkEvents.Protocol,
+    DataSent,
+    DeviceNetworkEvents.LocalIP,
+    ReportId=hash(strcat(DeviceNetworkEvents.DeviceName, DeviceNetworkEvents.RemoteIP, DeviceNetworkEvents.InitiatingProcessFileName))
