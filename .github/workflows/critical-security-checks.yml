@@ -6,9 +6,9 @@ run-name: Critical Checks - ${{ github.event.inputs.lookback_hours || '6' }}h ($
 
 on:
   push:
-    branches: [Staging]
+    branches: [staging]
   schedule:
-    - cron: '0 */2 * * *'  # Run every 2 hours
+    - cron: '0 */2 * * *'
   workflow_dispatch:
     inputs:
       lookback_hours:
@@ -26,10 +26,10 @@ permissions:
 
 jobs:
   run-critical-queries:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/Staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
     name: Critical Security Monitoring
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 10 # Reduced from 15
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -38,12 +38,10 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
       
-      # Ultra minimal disk space check that won't waste time
       - name: Quick environment setup
         id: env_setup
         shell: bash
         run: |
-          # Create required directories
           mkdir -p results/critical-checks .github/security logs
 
           disk="$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')"
@@ -51,7 +49,6 @@ jobs:
             echo "disk_status=CRITICAL" >> $GITHUB_OUTPUT
           fi
 
-      # Specialized cache for critical checks - separate from other workflows
       - name: Cache PowerShell environment
         id: cache-pwsh-env
         uses: actions/cache@v3
@@ -64,24 +61,20 @@ jobs:
             ${{ runner.os }}-pwsh-critical-
             ${{ runner.os }}-pwsh-
 
-      # Install PowerShell only if not cached
       - name: Setup PowerShell
         if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
         shell: bash
         run: |
           if ! command -v pwsh &> /dev/null; then
-            echo "Installing PowerShell..."
             wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
             sudo dpkg -i packages-microsoft-prod.deb
             sudo apt-get update -qq
             sudo apt-get install -y powershell
             rm packages-microsoft-prod.deb
             
-            # Install required PowerShell modules
             pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser"
           fi
       
-      # Load API credentials
       - name: Load credentials
         uses: 1password/load-secrets-action@v1
         with:
@@ -92,7 +85,6 @@ jobs:
           MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
           MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
       
-      # Execute critical queries
       - name: Run critical queries
         id: run_queries
         shell: pwsh
@@ -101,7 +93,6 @@ jobs:
           $lookbackHours = if ($lookbackHours -and $lookbackHours -ne '') { $lookbackHours } else { '6' }
           $lookbackDays = [Math]::Ceiling($lookbackHours / 24)
           
-          # Critical security check queries list
           $criticalQueries = @(
             "lolbas_execution.kql",
             "windows_credential_dumping.kql",
@@ -121,7 +112,6 @@ jobs:
             if (Test-Path $queryPath) {
               $query = Get-Content -Path $queryPath -Raw
               
-              # Replace time variables with appropriate pattern
               $query = $query -replace 'let\s+lookback_days\s+=\s+\d+;', "let lookback_days = $lookbackDays;"
               $query = $query -replace 'let\s+recent_window\s+=\s+\d+d;', "let recent_window = 1d;"
               $query = $query -replace 'ago\(24h\)', "ago($($lookbackHours)h)"
@@ -132,10 +122,9 @@ jobs:
                 ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -ErrorAction Stop
               } 
               catch {
-                Write-Host "[INFO] Query execution completed." # Generic message instead of error details
+                Write-Host "[INFO] Query execution completed."
               }
               
-              # Process results
               $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
               if ($results -and $results.Count -gt 0) {
                 $totalFindings += $results.Count
@@ -150,16 +139,13 @@ jobs:
             }
           }
           
-          # Save findings and generate reports
           if ($findingSummary.Count -gt 0) {
             $findingSummary | ConvertTo-Json | Out-File -FilePath "results/critical-checks/finding_summary.json"
             $findingSummary | Export-Csv -Path "results/critical-checks/critical_findings.csv" -NoTypeInformation
             
-            # Generate SARIF report
             $sarifFile = "results/critical-checks/critical-security-findings.sarif"
             ./scripts/generate-report.ps1 -InputPath "results/critical-checks" -OutputPath "results/critical-checks/critical_report.html" -ReportTitle "Critical Security Findings" -SecurityAlertPath $sarifFile
             
-            # Set outputs
             echo "has_findings=true" >> $GITHUB_OUTPUT
             echo "::add-mask::$totalFindings"
             echo "total_findings=FOUND" >> $GITHUB_OUTPUT
@@ -167,16 +153,14 @@ jobs:
             echo "has_findings=false" >> $GITHUB_OUTPUT
           }
 
-      # Use single artifact upload
       - name: Upload findings
         if: steps.run_queries.outputs.has_findings == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: critical-security-findings
           path: results/critical-checks/
-          retention-days: 14 # Shorter retention for frequent runs
+          retention-days: 14
       
-      # Upload to GitHub Security (enabled now that code scanning is on)
       - name: Upload to GitHub Security
         if: steps.run_queries.outputs.has_findings == 'true'
         uses: github/codeql-action/upload-sarif@v3
@@ -184,16 +168,13 @@ jobs:
           sarif_file: results/critical-checks/critical-security-findings.sarif
           category: critical_security
       
-      # Archive SARIF with timestamp
       - name: Archive SARIF
         if: steps.run_queries.outputs.has_findings == 'true'
         shell: bash
         run: |
           TIMESTAMP=$(date +%Y%m%d)
           cp results/critical-checks/critical-security-findings.sarif .github/security/critical-findings-${TIMESTAMP}.sarif
-          echo "Archive created with generic timestamp"
       
-      # Alert via 1Password if findings
       - name: Send critical alert
         if: steps.run_queries.outputs.has_findings == 'true'
         uses: 1password/load-secrets-action@v1

@@ -40,6 +40,7 @@ function Write-Log {
 
 function New-HTMLReport {
     [CmdletBinding()]
+
     param (
         [Parameter(Mandatory=$true)]
         [hashtable]$QueryResults,
@@ -216,9 +217,7 @@ function New-HTMLReport {
                     foreach ($header in $headers) {
                         $value = $row.$header -replace '<', '&lt;' -replace '>', '&gt;'
                         
-                        # Sanitize any potentially sensitive values in HTML output
                         if ($header -in @("DeviceName", "DeviceId", "AccountName", "AccountDomain", "IPAddress", "RemoteIP", "CommandLine", "FilePath", "RegistryKey")) {
-                            # Apply specific redactions based on field type
                             $value = switch ($header) {
                                 "DeviceName" { "DEVICE-NAME" }
                                 "DeviceId" { "DEVICE-ID" }
@@ -305,7 +304,7 @@ function New-SecurityAlertReport {
                             informationUri = "https://github.com/security"
                             semanticVersion = "1.0.0"
                             downloadUri = $null
-                            organization = "Security"
+                            organisation = "Security"
                             supportedTaxonomies = @(
                                 @{
                                     name = "Security"
@@ -376,7 +375,6 @@ function New-SecurityAlertReport {
                 $sarif.runs[0].tool.driver.rules += $rule
                 
                 foreach ($detection in $results) {
-                    # Use sanitized timestamps and identifiers
                     $timestamp = (Get-Date).Date.ToString("yyyy-MM-dd")
                     $deviceName = "DEVICE-NAME"
                     $deviceId = "DEVICE-ID"
@@ -418,8 +416,7 @@ function New-SecurityAlertReport {
                     }
                     
                     foreach ($prop in $detection.PSObject.Properties) {
-                        # Sanitize property values to avoid leaking data in SARIF
-                        $sanitizedValue = switch ($prop.Name) {
+                        $sanitisedValue = switch ($prop.Name) {
                             "DeviceName" { "DEVICE-NAME" }
                             "DeviceId" { "DEVICE-ID" }
                             "Timestamp" { $timestamp }
@@ -446,7 +443,7 @@ function New-SecurityAlertReport {
                             }
                         }
                         if ($prop.Name -notin @("DeviceName", "DeviceId", "Timestamp", "TimeGenerated")) {
-                            $result.properties[$prop.Name] = $sanitizedValue
+                            $result.properties[$prop.Name] = $sanitisedValue
                         }
                     }
                     
@@ -470,6 +467,84 @@ function New-SecurityAlertReport {
     }
     catch {
         Write-Log "Error generating SARIF report: $_" -Level ERROR
+        return $false
+    }
+}
+
+function Export-FindingsToCsv {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [hashtable]$QueryResults,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$CsvPath
+    )
+    
+    try {
+        Write-Log "Exporting findings to consolidated CSV file: $CsvPath"
+        
+        $allFindings = @()
+        
+        foreach ($queryName in $QueryResults.Keys) {
+            $results = $QueryResults[$queryName]
+            
+            if ($results -and $results.Count -gt 0) {
+                foreach ($finding in $results) {
+                    $findingObj = [PSCustomObject]@{
+                        QueryName = $queryName
+                        Timestamp = $finding.Timestamp
+                    }
+                    
+                    # Copy all properties from the finding
+                    foreach ($prop in $finding.PSObject.Properties) {
+                        if ($prop.Name -ne "Timestamp") { # Already added
+                            $sanitizedValue = switch ($prop.Name) {
+                                "DeviceName" { "DEVICE-NAME" }
+                                "DeviceId" { "DEVICE-ID" }
+                                "AccountName" { "USERNAME" }
+                                "AccountDomain" { "DOMAIN" }
+                                "IPAddress" { "0.0.0.0" }
+                                "RemoteIP" { "0.0.0.0" }
+                                "CommandLine" { "COMMAND-LINE" }
+                                "FilePath" { "FILE-PATH" }
+                                "RegistryKey" { "REGISTRY-KEY" }
+                                default { 
+                                    if ($prop.Value -is [string] -and ($prop.Value -match "\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}" -or 
+                                                                       $prop.Value -match "([A-Za-z0-9]+[\.-])+[A-Za-z0-9]{2,}" -or
+                                                                       $prop.Value -match "[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}")) {
+                                        "REDACTED"
+                                    } else {
+                                        $prop.Value
+                                    }
+                                }
+                            }
+                            $findingObj | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $sanitizedValue
+                        }
+                    }
+                    
+                    $allFindings += $findingObj
+                }
+            }
+        }
+        
+        if ($allFindings.Count -gt 0) {
+            $outputDir = Split-Path -Path $CsvPath -Parent
+            if (-not (Test-Path $outputDir)) {
+                New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
+            }
+            
+            $allFindings | Export-Csv -Path $CsvPath -NoTypeInformation -Force
+            Write-Log "Exported $($allFindings.Count) findings to $CsvPath"
+            return $true
+        }
+        else {
+            Write-Log "No findings to export to CSV" -Level WARNING
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Error exporting findings to CSV: $_" -Level ERROR
         return $false
     }
 }

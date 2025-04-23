@@ -6,7 +6,7 @@ run-name: "MDE Queries - Secure Run (${{ github.event_name }})"
 
 on:
   push:
-    branches: [Staging]
+    branches: [staging]
   schedule:
     - cron: '0 */6 * * *'  # Run every 6 hours on Master only
   workflow_dispatch:
@@ -34,7 +34,7 @@ env:
 
 jobs:
   run-queries:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/Staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
     name: Execute MDE Hunting Queries
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
