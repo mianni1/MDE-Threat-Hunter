@@ -3,7 +3,7 @@ run-name: Parallel Hunting - ${{ github.event.inputs.lookback_days || '7' }} Day
 
 on:
   push:
-    branches: [Staging]
+    branches: [staging]
   schedule:
     - cron: '0 2 * * 0'  # Run weekly on Sundays at 2:00 AM
   workflow_dispatch:

@@ -3,7 +3,7 @@ run-name: Runner Health Check (${{ github.event_name == 'schedule' && 'Scheduled
 
 on:
   push:
-    branches: [Staging]
+    branches: [staging]
   schedule:
     - cron: '0 */12 * * *'  # Run twice daily
   workflow_dispatch:  # Allow manual triggering

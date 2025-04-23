@@ -3,7 +3,7 @@ run-name: Daily Monitoring - ${{ github.event.inputs.lookback_hours || '24' }}h 
 
 on:
   push:
-    branches: [Staging]
+    branches: [staging]
   schedule:
     - cron: '0 8 * * *'  # Run daily at 8:00 AM
   workflow_dispatch:
