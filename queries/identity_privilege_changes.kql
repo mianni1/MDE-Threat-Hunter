@@ -1,0 +1,42 @@
+// DESCRIPTION:
+// Detects creation of new user accounts or their addition to high-privilege groups such as Domain Admins, Enterprise Admins, or Local Administrators.
+// MITRE_ATTACK:
+// T1078 (Valid Accounts), T1098 (Account Manipulation), T1136 (Create Account)
+// IMPACT:
+// Adversaries may gain persistence or elevate privileges by altering user group memberships.
+// REMEDIATION:
+// Validate whether these changes were authorised. Roll back any unauthorised changes and review associated user activity.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
+DeviceEvents
+| where Timestamp > timeWindow
+| where DeviceEvents.Timestamp > timeWindow
+| where ActionType in~ ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")
+| extend ParsedFields = iff(isnotempty(AdditionalFields), parse_json(AdditionalFields), dynamic({}))
+| extend GroupName = tostring(ParsedFields.GroupName)
+| extend GroupSid = tostring(ParsedFields.GroupSid)
+| extend SubjectUserSid = tostring(ParsedFields.SubjectUserSid)
+| extend SubjectUserName = tostring(ParsedFields.SubjectUserName)
+| extend TargetUserName = tostring(ParsedFields.TargetUserName)
+| extend TargetUserSid = tostring(ParsedFields.TargetUserSid)
+| extend NormalisedGroup = tolower(GroupName)
+| where 
+    NormalisedGroup has_any (
+        "admin", "administrator", "domain admins", "enterprise admins", 
+        "schema admins", "account operators", "backup operators"
+    )
+    or GroupSid == "S-1-5-32-544"
+| project
+    Timestamp,
+    DeviceName,
+    ActionType,
+    TargetUserName,
+    TargetUserSid,
+    GroupName,
+    GroupSid,
+    SubjectUserName,
+    SubjectUserSid,
+    ReportId = hash_sha256(strcat(DeviceName, TargetUserSid, ActionType, GroupSid, tostring(Timestamp)))

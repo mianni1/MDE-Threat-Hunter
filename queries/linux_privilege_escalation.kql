@@ -1,0 +1,64 @@
+// DESCRIPTION:
+// Detection of potential privilege escalation attempts on Linux systems that could indicate lateral movement or access elevation.
+// TECHNICAL:
+// This alert identifies suspicious commands related to privilege manipulation including: SUID/SGID bit modifications, password file access, sudoers file changes, crontab modifications, capability changes, and user group modifications that could grant elevated privileges.
+// MITRE_ATTACK:
+// T1548 (Abuse Elevation Control Mechanism), T1068 (Exploitation for Privilege Escalation), T1003.008 (/etc/passwd and /etc/shadow)
+// IMPACT:
+// Attackers may gain elevated privileges allowing them to access sensitive data, modify system configurations, or establish persistence.
+// REMEDIATION:
+// Investigate the context of the command execution, verify if it was authorised administrative activity, check for newly created SUID binaries, and review user privilege changes.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
+DeviceProcessEvents
+| where Timestamp > timeWindow
+| where DeviceProcessEvents.Timestamp > timeWindow
+| where FileName in~ (
+    "sudo", 
+    "su", 
+    "pkexec", 
+    "doas", 
+    "bash", 
+    "sh", 
+    "ksh", 
+    "zsh", 
+    "csh",
+    "perl", 
+    "python", 
+    "ruby"
+)
+| where ProcessCommandLine has_any(
+    "chmod u+s", 
+    "setuid", 
+    "setgid", 
+    "chown root",
+    "passwd", 
+    "shadow", 
+    "/etc/sudoers",
+    "visudo", 
+    "/etc/crontab", 
+    "/etc/cron.d/",
+    "LD_PRELOAD",
+    "capabilities", 
+    "cap_set",
+    "usermod -G sudo",
+    "usermod -G wheel",
+    "usermod -G admin",
+    "polkit",
+    "suid",
+    "sgid"
+)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    AccountDomain,
+    FileName, 
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessAccountName,
+    ReportId = hash_sha256(strcat(DeviceName, FileName, ProcessCommandLine, tostring(Timestamp)))

@@ -1,0 +1,28 @@
+*.bak
+
+# Ignore logs and results
+/logs/
+/results/
+/github/security/
+
+# Ignore PowerShell module caches and binaries
+/local/share/powershell/
+/usr/bin/pwsh
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore environment files and credentials
+.env
+*.pem
+*.key
+
+# Editor directories
+.vscode/
+.idea/
+
+# Node and python artifacts (if any)
+node_modules/
+__pycache__/
+*.pyc

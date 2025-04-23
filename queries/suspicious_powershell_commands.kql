@@ -1,0 +1,81 @@
+// DESCRIPTION:
+// Detection of suspicious PowerShell command execution with sophisticated detection for obfuscation and encoded commands.
+// TECHNICAL:
+// This alert is triggered by PowerShell commands that use suspicious combinations of parameters or techniques including: encoded commands, execution policy bypass, hidden windows, web downloads, reflection techniques, process manipulation, credential access, or persistence mechanisms. The query scores commands based on multiple risk factors.
+// MITRE_ATTACK:
+// T1059.001 (PowerShell), T1027 (Obfuscated Files or Information), T1552 (Unsecured Credentials), T1055 (Process Injection)
+// IMPACT:
+// Attackers may be using PowerShell to download malicious payloads, access credentials, establish persistence, or evade defences.
+// REMEDIATION:
+// Investigate the PowerShell command execution, verify if it was authorised, implement PowerShell logging and constrained language mode where appropriate.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
+DeviceProcessEvents
+| where Timestamp > timeWindow
+| where DeviceProcessEvents.Timestamp > timeWindow
+| where FileName in~ ("powershell.exe", "pwsh.exe", "powershell_ise.exe")
+| extend CommandLine = ProcessCommandLine
+| extend EncodedCommand = extract(@"(?i)-[eE][ncodema]*\s+([A-Za-z0-9+/=]+)", 1, CommandLine)
+| extend Flags = array_sort_asc(extract_all(@"(?i)-(\w+)", CommandLine))
+| extend HasEncodedCommand = isnotempty(EncodedCommand)
+| extend HasHiddenWindow = array_index_of(Flags, "w") != -1 or array_index_of(Flags, "windowstyle") != -1
+| extend HasNonInteractive = array_index_of(Flags, "noni") != -1 or array_index_of(Flags, "noninteractive") != -1
+| extend HasNoProfile = array_index_of(Flags, "nop") != -1 or array_index_of(Flags, "noprofile") != -1
+| extend HasBypass = array_index_of(Flags, "ep") != -1 or array_index_of(Flags, "executionpolicy") != -1
+| extend HasCommand = array_index_of(Flags, "c") != -1 or array_index_of(Flags, "command") != -1
+| extend HasSuspiciousDownload = CommandLine has_any(
+    "WebClient", "DownloadFile", "DownloadString", "DownloadData", "WebRequest", 
+    "Invoke-WebRequest", "wget", "curl", "Net.Webclient", "Start-BitsTransfer"
+)
+| extend HasSuspiciousExecution = CommandLine has_any(
+    "IEX", "Invoke-Expression", "Invoke-Command", "&", "Invoke-Item", "Invoke-RestMethod"
+)
+| extend HasReflection = CommandLine has_any(
+    "[System.Reflection.Assembly]::Load", "LoadWithPartialName", "Assembly.Load", "LoadFrom", "Load()"
+)
+| extend HasCreationMethods = CommandLine has_any(
+    "New-Object", "CreateInstance", "GetConstructor", "start-process", 
+    "Start-Job", "Invoke-WmiMethod", "Get-WmiObject", "New-Service", "Create"
+)
+| extend HasProcessDumping = CommandLine has_any(
+    "MiniDump", "processdump", "procdump", "Out-MiniDump", "LSASS", "comsvcs.dll"
+)
+| extend HasCredentialAccess = CommandLine has_any(
+    "Get-Credential", "GetNetworkCredential", "PasswordVault", "Credentials", 
+    "Password", "SecureString", "ConvertTo-SecureString", "PSCredential"
+)
+| extend HasPersistence = CommandLine has_any(
+    "ScheduledTask", "New-Service", "WMI EventConsumer", "New-ScheduledTaskAction", 
+    "Registry", "HKCU:", "HKLM:"
+)
+| extend SuspiciousFlags = array_sort_asc(pack_array(
+    HasEncodedCommand, HasHiddenWindow, HasNonInteractive, HasNoProfile, 
+    HasBypass, HasSuspiciousDownload, HasSuspiciousExecution, 
+    HasReflection, HasCreationMethods, HasProcessDumping, 
+    HasCredentialAccess, HasPersistence
+))
+| extend SuspiciousScore = array_sum(SuspiciousFlags)
+| where SuspiciousScore >= 2 or HasEncodedCommand
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    FileName,
+    CommandLine,
+    SuspiciousScore,
+    HasEncodedCommand,
+    HasHiddenWindow,
+    HasNoProfile,
+    HasBypass,
+    HasSuspiciousDownload,
+    HasSuspiciousExecution,
+    HasReflection,
+    HasProcessDumping,
+    HasCredentialAccess,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessParentFileName,
+    ReportId = hash_sha256(strcat(DeviceName, AccountName, CommandLine, tostring(Timestamp)))

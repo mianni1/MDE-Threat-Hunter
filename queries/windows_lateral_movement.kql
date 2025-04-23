@@ -1,0 +1,57 @@
+// DESCRIPTION:
+// Detection of potential lateral movement techniques where attackers move between systems within a network after initial compromise.
+// TECHNICAL:
+// This alert correlates successful administrative logons (network or remote interactive) with outbound network connections to common lateral movement service ports (RDP, SMB, WinRM, SSH) within a 5-minute window. The combination suggests an attacker may be using compromised admin credentials to move between systems.
+// MITRE_ATTACK:
+// T1021 (Remote Services), T1078 (Valid Accounts), T1563 (Remote Service Session Hijacking), T1550 (Use Alternate Authentication Material)
+// IMPACT:
+// Attackers may be expanding their foothold in the environment by moving laterally between systems using compromised administrative credentials.
+// REMEDIATION:
+// Investigate the source and destination systems, validate if the administrative access was authorised, review the account's recent activity, and consider implementing network segmentation.
+// END_DESCRIPTION
+
+// API-compatible query with time-filtered tables for validation
+let timeWindow = ago(24h);
+
+DeviceLogonEvents
+| where Timestamp > timeWindow
+| where DeviceLogonEvents.Timestamp > timeWindow
+| where ActionType == "LogonSuccess"
+| where LogonType in (3, 10)  // Type 3 = Network, Type 10 = RemoteInteractive
+| where IsLocalAdmin == true
+| project DLE_Timestamp=Timestamp, DLE_DeviceName=DeviceName, DeviceId, AccountName, AccountDomain, 
+         LogonType, IsLocalAdmin, DLE_InitiatingProcessFileName=InitiatingProcessFileName, 
+         DLE_InitiatingProcessCommandLine=InitiatingProcessCommandLine
+// Join with network connection events
+| join kind=inner (
+    DeviceNetworkEvents
+    | where Timestamp > timeWindow
+    | where DeviceNetworkEvents.Timestamp > timeWindow
+    | where ActionType == "ConnectionSuccess"
+    | where RemotePort in (22, 23, 135, 139, 445, 593, 3389, 5985, 5986)
+) on DeviceId
+| where abs(datetime_diff('minute', DLE_Timestamp, Timestamp)) < 5
+| extend ServiceName = case(
+    RemotePort == 22, "SSH",
+    RemotePort == 23, "Telnet",
+    RemotePort == 135, "RPC",
+    RemotePort in (139, 445), "SMB",
+    RemotePort == 593, "RPC over HTTP",
+    RemotePort == 3389, "RDP",
+    RemotePort in (5985, 5986), "WinRM",
+    "Other"
+)
+| project
+    Timestamp = DLE_Timestamp,
+    DeviceName = DLE_DeviceName,
+    LocalIP,
+    RemoteIP,
+    RemotePort,
+    ServiceName,
+    AccountName,
+    AccountDomain,
+    LogonType,
+    IsLocalAdmin,
+    InitiatingProcessFileName = DLE_InitiatingProcessFileName,
+    InitiatingProcessCommandLine = DLE_InitiatingProcessCommandLine,
+    ReportId = hash_sha256(strcat(DLE_DeviceName, RemoteIP, AccountName, tostring(DLE_Timestamp)))

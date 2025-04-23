@@ -1,0 +1,64 @@
+// DESCRIPTION:
+// Detection of Living Off the Land Binaries and Scripts (LOLBAS) execution. These are legitimate Windows tools that can be abused by attackers for malicious purposes.
+// TECHNICAL:
+// This alert triggers when a known legitimate Windows tool is used with suspicious parameters or execution context. Detected binaries include: certutil.exe with -encode/-decode flags, regsvr32.exe with suspicious DLL loads, mshta.exe loading remote HTA files, rundll32.exe with non-standard entry points, or unusual uses of bitsadmin.exe, installutil.exe, or msbuild.exe with non-standard parameters.
+// MITRE_ATTACK:
+// T1218 (Signed Binary Proxy Execution), T1036 (Masquerading), T1059 (Command and Scripting Interpreter)
+// IMPACT:
+// This may indicate an attacker is using legitimate system tools to evade detection while performing malicious activities.
+// REMEDIATION:
+// Investigate the process execution context, command line arguments, and user account. Consider implementing application control policies.
+// END_DESCRIPTION
+
+// API-compatible query with standardized time filter
+let timeWindow = ago(1d);
+
+DeviceProcessEvents
+| where Timestamp > timeWindow
+| where FileName in~ (
+    "certutil.exe", "regsvr32.exe", "rundll32.exe", "msiexec.exe",
+    "mshta.exe", "msdt.exe", "odbcconf.exe", "regasm.exe", 
+    "regsvcs.exe", "installutil.exe", "cmstp.exe", "mavinject.exe",
+    "forfiles.exe", "scriptrunner.exe", "msbuild.exe", "appvlp.exe",
+    "presentationhost.exe", "wmic.exe", "pcwrun.exe", "diskshadow.exe",
+    "dnscmd.exe", "netsh.exe", "vssadmin.exe", "wsl.exe", "bitsadmin.exe",
+    "csvde.exe", "expand.exe", "extexport.exe", "extrac32.exe", "ieexec.exe", 
+    "makecab.exe", "nltest.exe", "syncappvpublishingserver.exe", "te.exe",
+    "desktopimgdownldr.exe", "dfsvc.exe", "diantz.exe", "dnsclientcim.dll",
+    "esentutl.exe", "eventvwr.exe", "ftp.exe", "icacls.exe"
+)
+| where not (
+    (FileName == "regsvr32.exe" and ProcessCommandLine has_any("C:\\Windows\\System32\\", "C:\\Windows\\SysWOW64\\")) or
+    (FileName == "rundll32.exe" and ProcessCommandLine has "C:\\Windows\\System32\\shell32.dll,Control_RunDLL") or
+    (FileName == "msiexec.exe" and ProcessCommandLine has_any("uninstall", "/I{", "/X{")) or
+    (FileName == "netsh.exe" and ProcessCommandLine has_any("show ", "display ", "interface ")) or
+    (FileName == "wmic.exe" and ProcessCommandLine has_any("diskdrive get", "cpu get", "os get", "computersystem get"))
+)
+| extend CommandTruncated = substring(ProcessCommandLine, 0, 800)
+| extend SuspiciousFlags = case(
+    FileName == "certutil.exe" and ProcessCommandLine has_any("-urlcache", "-decode", "-encode"), "File download/encoding activity",
+    FileName == "regsvr32.exe" and ProcessCommandLine has_any("scrobj.dll", "/i:", "/s", "/u"), "Possible scriptlet execution",
+    FileName == "rundll32.exe" and ProcessCommandLine has_any("javascript:", "http:", "ftp:", ".dll,"), "Unusual DLL/URL loading",
+    FileName == "mshta.exe" and ProcessCommandLine has_any("javascript:", "vbscript:", "http:", ".hta"), "Scriptlet execution",
+    FileName == "cmstp.exe" and ProcessCommandLine has "/s", "Silent INF installation",
+    FileName == "msbuild.exe" and ProcessCommandLine has ".xml", "XML project execution",
+    FileName == "wmic.exe" and ProcessCommandLine has_any("process call create", "shadowcopy"), "Process creation/shadow copy",
+    FileName == "bitsadmin.exe" and ProcessCommandLine has_any("transfer", "download"), "File transfer",
+    FileName == "vssadmin.exe" and ProcessCommandLine has_any("delete shadows", "resize shadowstorage"), "Shadow copy deletion",
+    FileName == "netsh.exe" and ProcessCommandLine has_any("add helper", "advfirewall"), "Network configuration change",
+    "Suspicious LOLBAS tool execution"
+)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    AccountDomain,
+    FileName,
+    CommandTruncated,
+    SuspiciousFlags,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessAccountName,
+    FolderPath,
+    SHA256,
+    ReportId = hash_sha256(strcat(DeviceName, FileName, ProcessCommandLine, tostring(Timestamp)))
