@@ -385,14 +385,19 @@ jobs:
           
           echo "group=$queryGroup" >> $env:GITHUB_OUTPUT
       
-      # Upload findings for this group
-      - name: Upload findings
-        if: steps.run_queries.outputs.total_findings > 0
-        uses: actions/upload-artifact@v4
+      # Upload to GitHub Security
+      - name: Upload to GitHub Security
+        if: steps.run_queries.outputs.has_findings == 'true'
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          name: threat-hunting-results-${{ matrix.group }}
-          path: results/parallel-hunting/${{ matrix.group }}
-          retention-days: 30
+          sarif_file: results/parallel-hunting/${{ matrix.group }}/findings.sarif
+          category: parallel_hunting_${{ matrix.group }}
+      
+      # Archive SARIF for history
+      - name: Archive SARIF
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: bash
+        run: cp results/parallel-hunting/${{ matrix.group }}/findings.sarif .github/security/parallel-findings-${{ matrix.group }}-$(date +%Y%m%d).sarif
   
   # Aggregate and report all findings
   aggregate-results:
@@ -422,12 +427,6 @@ jobs:
         run: |
           mkdir -p results/combined .github/security
       
-      # Download all group artifacts
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: results/artifacts
-      
       # Combine all findings into a single report
       - name: Aggregate findings
         id: aggregate
@@ -437,16 +436,10 @@ jobs:
           $allSummaries = @()
           $totalFindings = 0
           
-          # Check for downloaded artifacts before aggregation
-          $summaryDir = "results/artifacts"
-          if (-not (Test-Path $summaryDir)) {
-              Write-Host "No artifacts found; skipping aggregation."
-              echo "has_findings=false" >> $env:GITHUB_OUTPUT
-              exit 0
-          }
-          $summaryFiles = Get-ChildItem -Path "$summaryDir" -Filter "finding_summary.json" -Recurse -ErrorAction SilentlyContinue
+          # Check for parallel hunting results
+          $huntingDirs = Get-ChildItem -Path "results/parallel-hunting" -Directory -ErrorAction SilentlyContinue
           
-          if ($summaryFiles.Count -eq 0) {
+          if ($huntingDirs.Count -eq 0) {
             # No findings: generate empty report
             "<h1>Parallel Threat Hunting Report</h1><p>Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm')</p><p>No findings detected.</p>" |
               Out-File -FilePath (Join-Path $outputDir "combined_report.html")
@@ -454,48 +447,71 @@ jobs:
             @{ version = "2.1.0"; runs = @() } | ConvertTo-Json -Depth 5 |
               Out-File (Join-Path $outputDir "combined-threat-findings.sarif")
             echo "has_findings=false" >> $env:GITHUB_OUTPUT
-          } else {
-            Write-Host "Aggregating findings from $($summaryFiles.Count) groups..."
-            
-            foreach ($file in $summaryFiles) {
-              $groupSummary = Get-Content -Raw -Path $file.FullName | ConvertFrom-Json
-              $allSummaries += $groupSummary
-              
-              # Sum up findings
-              $groupTotal = ($groupSummary | Measure-Object -Property Count -Sum).Sum
-              $totalFindings += $groupTotal
+            exit 0
+          }
+          
+          # Process each group's findings
+          foreach ($dir in $huntingDirs) {
+            $summaryPath = Join-Path $dir.FullName "finding_summary.json"
+            if (Test-Path $summaryPath) {
+              $groupSummary = Get-Content -Raw -Path $summaryPath | ConvertFrom-Json -ErrorAction SilentlyContinue
+              if ($groupSummary) {
+                $allSummaries += $groupSummary
+                
+                # Sum up findings
+                $groupTotal = ($groupSummary | Measure-Object -Property Count -Sum).Sum
+                $totalFindings += $groupTotal
+              }
             }
+          }
+          
+          if ($allSummaries.Count -gt 0) {
+            # Save combined summary
+            $allSummaries | ConvertTo-Json | Out-File -FilePath "$outputDir/combined_summary.json"
+            $allSummaries | Export-Csv -Path "$outputDir/combined_findings.csv" -NoTypeInformation
             
-            # Use shared report generation script for HTML and SARIF
-            ./scripts/generate-report.ps1 \
-              -InputPath "$outputDir" \
-              -OutputPath "$outputDir/combined_report.html" \
-              -ReportTitle "Parallel Threat Hunting Report" \
+            # Generate combined report
+            ./scripts/generate-report.ps1 `
+              -InputPath "$outputDir" `
+              -OutputPath "$outputDir/combined_report.html" `
+              -ReportTitle "Parallel Threat Hunting Report" `
               -SecurityAlertPath "$outputDir/combined-threat-findings.sarif"
+              
             echo "has_findings=true" >> $env:GITHUB_OUTPUT
             echo "total_findings=$totalFindings" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "has_findings=false" >> $env:GITHUB_OUTPUT
           }
-      
-      # Upload combined report (always)
-      - name: Upload combined report
-        uses: actions/upload-artifact@v4
-        with:
-          name: threat-hunting-consolidated-report
-          path: results/combined/
-          retention-days: 90
-          if-no-files-found: ignore
       
       # Upload to GitHub Security if findings exist
       - name: Upload to GitHub Security
         if: steps.aggregate.outputs.has_findings == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
-          category: parallel_hunting
+          category: "parallel_hunting_combined"
           sarif_file: results/combined/combined-threat-findings.sarif
       
-      # Archive SARIF to security directory
+      # Archive SARIF to security directory for historical tracking
       - name: Archive SARIF to security directory
         if: steps.aggregate.outputs.has_findings == 'true'
         shell: bash
         run: |
           cp results/combined/combined-threat-findings.sarif .github/security/parallel-findings-$(date +%Y%m%d).sarif
+      
+      # Add workflow summary
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          echo "## Parallel Threat Hunting Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.aggregate.outputs.has_findings }}" == "true" ]; then
+            echo "**${TOTAL_FINDINGS} security findings detected**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Results are available in GitHub Security:" >> $GITHUB_STEP_SUMMARY
+            echo "https://github.com/${{ github.repository }}/security/code-scanning?query=is%3Aopen+category%3Aparallel_hunting_combined" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No security findings detected" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          TOTAL_FINDINGS="${{ steps.aggregate.outputs.total_findings }}"

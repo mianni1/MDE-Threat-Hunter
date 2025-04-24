@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of techniques used to bypass security controls, disable defences, or hide malicious activities on Windows systems.
+// TECHNICAL:
+// This alert is triggered by: (1) Commands that stop or disable security services like Windows Defender, firewall services, or other EDR solutions, (2) Tampering with Windows Event Logging or security monitoring, (3) Use of known AMSI bypass techniques, (4) Process hollowing or injection indicators such as unusual memory allocations in remote processes via VirtualAllocEx or WriteProcessMemory, (5) Unusual driver loading operations with suspicious digital signatures.
+// MITRE_ATTACK:
+// T1562 (Impair Defences), T1112 (Modify Registry), T1070 (Indicator Removal on Host), T1055 (Process Injection)
+// IMPACT:
+// Security tools may be compromised, allowing attackers to operate undetected.
+// REMEDIATION:
+// Verify integrity of security tools, review disabled services, and investigate suspicious registry modifications.
+// END_DESCRIPTION
+
 DeviceProcessEvents
 | where DeviceProcessEvents.Timestamp > ago(24h)
 // Removed OSPlatform filter and relying on Windows-specific commands instead

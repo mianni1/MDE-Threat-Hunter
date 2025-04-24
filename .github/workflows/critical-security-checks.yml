@@ -156,20 +156,12 @@ jobs:
             echo "has_findings=false" >> $GITHUB_OUTPUT
           }
 
-      - name: Upload findings
-        if: steps.run_queries.outputs.has_findings == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: critical-security-findings
-          path: results/critical-checks/
-          retention-days: 14
-      
       - name: Upload to GitHub Security
         if: steps.run_queries.outputs.has_findings == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results/critical-checks/critical-security-findings.sarif
-          category: critical_security
+          category: "critical_security"
       
       - name: Archive SARIF
         if: steps.run_queries.outputs.has_findings == 'true'
@@ -186,6 +178,27 @@ jobs:
           export-env: false
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_WRITE }}
-          TITLE: "⚠️ CRITICAL SECURITY ALERT"
+          TITLE: "⚠️ CRITICAL SECURITY ALERT - $(date +%Y-%m-%d)"
+          VAULT: "Security Automation"
+          CATEGORY: "Secure Note"
           NOTESPLAIN: |
-            Critical alert triggered. Details available in security dashboard.
+            Critical security alert triggered
+            
+            Date: $(date)
+            Run ID: ${{ github.run_id }}
+            Lookback Period: ${{ github.event.inputs.lookback_hours || '6' }} hours
+            
+            Critical security findings detected. Details available in GitHub Security dashboard:
+            https://github.com/${{ github.repository }}/security/code-scanning?query=is%3Aopen+category%3Acritical_security
+      
+      - name: Workflow summary
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: bash
+        run: |
+          echo "## ⚠️ CRITICAL SECURITY ALERT" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Critical security findings have been detected." >> $GITHUB_STEP_SUMMARY
+          echo "Lookback Period: ${{ github.event.inputs.lookback_hours || '6' }} hours" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Review immediately in GitHub Security dashboard:**" >> $GITHUB_STEP_SUMMARY
+          echo "https://github.com/${{ github.repository }}/security/code-scanning?query=is%3Aopen+category%3Acritical_security" >> $GITHUB_STEP_SUMMARY

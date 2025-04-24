@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of suspicious command execution on macOS systems that may indicate malicious activity.
+// TECHNICAL:
+// This alert identifies execution of potentially dangerous commands on macOS including script execution (osascript), file downloads (curl/wget), network connections (nc/netcat), permissions changes (chmod), service manipulation (launchctl), or privilege escalation (sudo). Focus is on commands not initiated from standard application directories.
+// MITRE_ATTACK:
+// T1059.004 (Unix Shell), T1105 (Ingress Tool Transfer), T1059.002 (AppleScript), T1548.003 (Sudo and Sudo Caching)
+// IMPACT:
+// Attackers may be downloading malicious payloads, executing malicious scripts, or attempting to gain elevated privileges.
+// REMEDIATION:
+// Investigate the process execution context, isolate affected systems if malicious activity is confirmed, and review security policies for script execution.
+// END_DESCRIPTION
+
 DeviceProcessEvents
 | where DeviceProcessEvents.Timestamp > ago(24h)
 // Removed OSPlatform filter and relying on macOS-specific commands instead

@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of suspicious network connections from Linux systems that may indicate command and control or data exfiltration activity.
+// TECHNICAL:
+// This alert triggers when potentially suspicious utilities like netcat, socat, or scripting languages establish connections to non-private IP addresses on commonly exploited ports. The connections are enriched with geographical information to help identify unusual destinations.
+// MITRE_ATTACK:
+// T1095 (Non-Application Layer Protocol), T1071 (Application Layer Protocol), T1572 (Protocol Tunneling)
+// IMPACT:
+// Attackers may be establishing command and control channels, exfiltrating data, or using Linux systems as jump hosts to other networks.
+// REMEDIATION:
+// Investigate the process initiating the connection, verify if it's authorised, check the destination IP reputation, and consider implementing outbound connection restrictions for sensitive systems.
+// END_DESCRIPTION
+
 DeviceNetworkEvents
 | where DeviceNetworkEvents.Timestamp > ago(24h)
 // Removed OSPlatform filter and relying on Linux-specific processes instead

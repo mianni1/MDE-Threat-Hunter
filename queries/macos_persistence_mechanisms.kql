@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of potentially malicious persistence mechanisms on macOS systems through launch agent and daemon plist files.
+// TECHNICAL:
+// This alert identifies newly created or modified .plist files in macOS launch directories that are not signed by Apple. These files can be used by attackers to maintain persistence across system reboots by automatically executing malicious code.
+// MITRE_ATTACK:
+// T1547.011 (Plist Modification), T1543.001 (Launch Agent/Daemon), T1546 (Event Triggered Execution)
+// IMPACT:
+// Attackers may have established persistence that allows malware to survive system reboots and user logoffs.
+// REMEDIATION:
+// Review the identified plist files for legitimacy, verify publisher signatures, remove unauthorised launch agents/daemons, and investigate the process that created them.
+// END_DESCRIPTION
+
 DeviceFileCertificateInfo
 | where DeviceFileCertificateInfo.Timestamp > ago(24h)
 | where DeviceFileCertificateInfo.FileName endswith ".plist"

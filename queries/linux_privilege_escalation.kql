@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of potential privilege escalation attempts on Linux systems that could indicate lateral movement or access elevation.
+// TECHNICAL:
+// This alert identifies suspicious commands related to privilege manipulation including: SUID/SGID bit modifications, password file access, sudoers file changes, crontab modifications, capability changes, and user group modifications that could grant elevated privileges.
+// MITRE_ATTACK:
+// T1548 (Abuse Elevation Control Mechanism), T1068 (Exploitation for Privilege Escalation), T1003.008 (/etc/passwd and /etc/shadow)
+// IMPACT:
+// Attackers may gain elevated privileges allowing them to access sensitive data, modify system configurations, or establish persistence.
+// REMEDIATION:
+// Investigate the context of the command execution, verify if it was authorised administrative activity, check for newly created SUID binaries, and review user privilege changes.
+// END_DESCRIPTION
+
 DeviceProcessEvents
 | where DeviceProcessEvents.Timestamp > ago(24h)
 // Removed OSPlatform filter and relying on Linux-specific commands instead

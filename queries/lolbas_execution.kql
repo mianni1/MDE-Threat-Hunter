@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of Living Off the Land Binaries and Scripts (LOLBAS) execution. These are legitimate Windows tools that can be abused by attackers for malicious purposes.
+// TECHNICAL:
+// This alert triggers when a known legitimate Windows tool is used with suspicious parameters or execution context. Detected binaries include: certutil.exe with -encode/-decode flags, regsvr32.exe with suspicious DLL loads, mshta.exe loading remote HTA files, rundll32.exe with non-standard entry points, or unusual uses of bitsadmin.exe, installutil.exe, or msbuild.exe with non-standard parameters.
+// MITRE_ATTACK:
+// T1218 (Signed Binary Proxy Execution), T1036 (Masquerading), T1059 (Command and Scripting Interpreter)
+// IMPACT:
+// This may indicate an attacker is using legitimate system tools to evade detection while performing malicious activities.
+// REMEDIATION:
+// Investigate the process execution context, command line arguments, and user account. Consider implementing application control policies.
+// END_DESCRIPTION
+
 // Detect Living Off the Land Binaries and Scripts (LOLBAS) execution
 DeviceProcessEvents
 | where DeviceProcessEvents.Timestamp > ago(24h)

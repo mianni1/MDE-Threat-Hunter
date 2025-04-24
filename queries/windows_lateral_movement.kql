@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of potential lateral movement techniques where attackers move between systems within a network after initial compromise.
+// TECHNICAL:
+// This alert correlates successful administrative logons (network or remote interactive) with outbound network connections to common lateral movement service ports (RDP, SMB, WinRM, SSH) within a 5-minute window. The combination suggests an attacker may be using compromised admin credentials to move between systems.
+// MITRE_ATTACK:
+// T1021 (Remote Services), T1078 (Valid Accounts), T1563 (Remote Service Session Hijacking), T1550 (Use Alternate Authentication Material)
+// IMPACT:
+// Attackers may be expanding their foothold in the environment by moving laterally between systems using compromised administrative credentials.
+// REMEDIATION:
+// Investigate the source and destination systems, validate if the administrative access was authorised, review the account's recent activity, and consider implementing network segmentation.
+// END_DESCRIPTION
+
 DeviceLogonEvents
 | where DeviceLogonEvents.Timestamp > ago(24h)
 // Removed OSPlatform filter

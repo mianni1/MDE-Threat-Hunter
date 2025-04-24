@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of privilege escalation through identity management changes, focusing on additions to administrative groups.
+// TECHNICAL:
+// This alert identifies user account operations that may indicate privilege escalation, including new account creation and additions to sensitive security groups like Domain Admins, Enterprise Admins, and local Administrators groups.
+// MITRE_ATTACK:
+// T1078 (Valid Accounts), T1098 (Account Manipulation), T1136 (Create Account)
+// IMPACT:
+// Attackers may be establishing persistence or elevating privileges by creating new accounts or adding compromised accounts to administrative groups.
+// REMEDIATION:
+// Verify the legitimacy of the account changes, review the authorisation for such changes, remove unauthorised privileges, and monitor the affected accounts for suspicious activity.
+// END_DESCRIPTION
+
 DeviceEvents
 | where DeviceEvents.Timestamp > ago(24h)
 | where DeviceEvents.ActionType in ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")

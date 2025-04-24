@@ -1,35 +1,5 @@
 version: 2
 updates:
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "security"
-    allow:
-      - dependency-type: "production"
-    versioning-strategy: increase-if-necessary
-    commit-message:
-      prefix: "deps"
-      include: "scope"
-
-  - package-ecosystem: "nuget"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    labels:
-      - "dependencies"
-      - "security"
-    commit-message:
-      prefix: "deps"
-      prefix-development: "dev-deps"
-      include: "scope"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -38,6 +8,21 @@ updates:
     labels:
       - "dependencies"
       - "ci-cd"
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "ci"
       include: "scope"
+      
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "powershell-modules"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    target-branch: "main"

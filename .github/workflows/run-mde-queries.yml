@@ -306,21 +306,13 @@ jobs:
             }
           }
       
-      # Upload all results as single artifact
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: mde-hunting-results
-          path: results/
-          retention-days: 30
-      
       # Upload to GitHub Security (enabled now that code scanning is on)
       - name: Upload to GitHub Security
         if: steps.run_queries.outputs.has_findings == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results/mde-security-findings.sarif
-          category: mde_hunting
+          category: "security-scan"
       
       # Archive SARIF with date stamp
       - name: Archive SARIF
@@ -328,3 +320,14 @@ jobs:
         shell: bash
         run: |
           cp results/mde-security-findings.sarif .github/security/mde-findings-$(date +%Y%m%d).sarif
+          
+      # Notify about findings through workflow summary
+      - name: Summarize findings
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: bash
+        run: |
+          echo "## MDE Threat Hunting Results" >> $GITHUB_STEP_SUMMARY
+          echo "Found **${{ steps.run_queries.outputs.total_findings }}** security findings" >> $GITHUB_STEP_SUMMARY
+          echo "Results have been uploaded to GitHub Security" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View findings in Security tab: https://github.com/${{ github.repository }}/security/code-scanning" >> $GITHUB_STEP_SUMMARY

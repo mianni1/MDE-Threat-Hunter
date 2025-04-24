@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of suspicious PowerShell command execution with sophisticated detection for obfuscation and encoded commands.
+// TECHNICAL:
+// This alert is triggered by PowerShell commands that use suspicious combinations of parameters or techniques including: encoded commands, execution policy bypass, hidden windows, web downloads, reflection techniques, process manipulation, credential access, or persistence mechanisms. The query scores commands based on multiple risk factors.
+// MITRE_ATTACK:
+// T1059.001 (PowerShell), T1027 (Obfuscated Files or Information), T1552 (Unsecured Credentials), T1055 (Process Injection)
+// IMPACT:
+// Attackers may be using PowerShell to download malicious payloads, access credentials, establish persistence, or evade defences.
+// REMEDIATION:
+// Investigate the PowerShell command execution, verify if it was authorised, implement PowerShell logging and constrained language mode where appropriate.
+// END_DESCRIPTION
+
 // Detect suspicious PowerShell command execution with sophisticated detection for obfuscation and encoded commands
 DeviceProcessEvents
 | where DeviceProcessEvents.Timestamp > ago(24h)

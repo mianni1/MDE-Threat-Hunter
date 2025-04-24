@@ -1,8 +1,15 @@
-// Query to detect unusual network connections
-// Author: MDE Threat Hunter Team
-// Last Updated: 2025-04-20
+// DESCRIPTION:
+// Detection of unusual outbound network connections that might indicate command and control (C2) communication or data exfiltration attempts.
+// TECHNICAL:
+// This alert triggers when processes other than common browsers or web servers establish connections to suspicious ports (22, 23, 445, 1433, 3389, 4444, 5800, 5900, 8080, 8443, or ports >= 6000) to non-private IP addresses. The connections are enriched with geographical information.
+// MITRE_ATTACK:
+// T1043 (Command and Control), T1071 (Application Layer Protocol), T1090 (Proxy), T1219 (Remote Access Software)
+// IMPACT:
+// These connections may indicate exfiltration of sensitive data, remote control of systems, or malware communicating with command servers.
+// REMEDIATION:
+// Investigate the connecting process, examine the destination IP reputation, review any data transferred, and consider blocking suspicious connections.
+// END_DESCRIPTION
 
-// Look for unusual outbound network connections that might indicate C2 or data exfiltration
 DeviceNetworkEvents
 | where DeviceNetworkEvents.Timestamp > ago(24h)
 | where DeviceNetworkEvents.ActionType == "ConnectionSuccess"

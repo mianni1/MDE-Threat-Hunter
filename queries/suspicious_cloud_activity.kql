@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of suspicious cloud service activities that may indicate data exfiltration, account compromise, or other malicious actions.
+// TECHNICAL:
+// This alert triggers on high-risk cloud activities including: mass downloads, mail exports, anonymous IP usage, administrator logins from unusual countries, mail forwarding/redirection rule creation, or unusual user-agent combinations. Events are risk-scored based on severity.
+// MITRE_ATTACK:
+// T1530 (Data from Cloud Storage Object), T1078 (Valid Accounts), T1114 (Email Collection), T1534 (Internal Spearphishing)
+// IMPACT:
+// Data exfiltration, account compromise, email theft, or preparation for additional attacks may be underway.
+// REMEDIATION:
+// Reset compromised account credentials, review and remove suspicious mail forwarding rules, lock suspicious IP addresses, and consider implementing additional cloud security controls.
+// END_DESCRIPTION
+
 // Detect suspicious cloud activity including data exfiltration and unusual access patterns
 CloudAppEvents
 | where CloudAppEvents.Timestamp > ago(24h)

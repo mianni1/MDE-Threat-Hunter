@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of potential persistence techniques used by attackers to maintain access to Windows systems across reboots.
+// TECHNICAL:
+// This alert identifies modifications to common Windows persistence locations including: Run/RunOnce registry keys, Winlogon registry entries, Explorer startup folders, and user shell folders. These locations can be abused to maintain unauthorised access to compromised systems.
+// MITRE_ATTACK:
+// T1547 (Boot or Logon Autostart Execution), T1037 (Boot or Logon Initialization Scripts), T1546 (Event Triggered Execution)
+// IMPACT:
+// Attackers may maintain access to compromised systems even after system restarts or user logoffs.
+// REMEDIATION:
+// Review the identified persistence mechanisms, verify if they are legitimate applications, remove unauthorised entries, and investigate how they were created.
+// END_DESCRIPTION
+
 union DeviceRegistryEvents, DeviceProcessEvents
 | where DeviceRegistryEvents.Timestamp > ago(24h)
 // Removed OSPlatform filter and relying on Windows-specific registry paths instead

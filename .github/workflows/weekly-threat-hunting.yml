@@ -259,15 +259,21 @@ jobs:
             echo "has_findings=false" >> $env:GITHUB_OUTPUT
           }
 
-      # Upload all results together - no need for conditional uploads
-      - name: Upload artifacts & security findings
-        uses: actions/upload-artifact@v4
-        with:
-          name: weekly-threat-hunting
-          path: results/weekly-hunting/
-          retention-days: 90
-      
-      # Upload to GitHub Security (enabled now that code scanning is on)
+      # Generate report and SARIF file
+      - name: Generate findings report and security data
+        if: steps.run_queries.outputs.has_findings == 'true'
+        shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
+        run: |
+          $sarifFile = "results/weekly-hunting/weekly-security-findings.sarif"
+          
+          # Generate HTML report for internal review (not uploaded as artifact)
+          ./scripts/generate-report.ps1 -InputPath "results/weekly-hunting" -OutputPath "results/weekly-hunting/weekly_report.html" -ReportTitle "Weekly Threat Hunting Report" -SecurityAlertPath $sarifFile
+          
+          Write-Host "Security findings processed and SARIF generated"
+
+      # Upload SARIF to GitHub Security
       - name: Upload to GitHub Security
         if: steps.run_queries.outputs.has_findings == 'true'
         uses: github/codeql-action/upload-sarif@v3
@@ -297,9 +303,4 @@ jobs:
             
             Date: $(date)
             Run ID: ${{ github.run_id }}
-            Lookback Period: ${{ github.event.inputs.lookback_days || '7' }} days
-            Findings detected: ${{ steps.run_queries.outputs.has_findings == 'true' && 'Yes' || 'No' }}
-            ${{ steps.run_queries.outputs.has_findings == 'true' && format('Number of findings: {0}', steps.run_queries.outputs.total_findings) || 'No security issues detected in the analysis period.' }}
-            ${{ steps.run_queries.outputs.suspicious_device_count && format('CRITICAL: {0} devices show signs of potential compromise', steps.run_queries.outputs.suspicious_device_count) || '' }}
-            
-            Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Lookback Period: ${{ github.event.inputs.lookback_days

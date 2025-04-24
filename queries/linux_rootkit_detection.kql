@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of potential Linux rootkit installation or kernel module manipulation activity.
+// TECHNICAL:
+// This alert identifies suspicious usage of kernel module management commands (insmod, modprobe, rmmod) or access to sensitive kernel information files (/proc/modules, /proc/kallsyms). Legitimate activity related to known hardware drivers like nvidia or virtualisation software is excluded.
+// MITRE_ATTACK:
+// T1014 (Rootkit), T1547.006 (Kernel Modules and Extensions), T1215 (Kernel Modules and Extensions)
+// IMPACT:
+// Attackers may be installing kernel-level rootkits or malicious modules that can hide processes, files, and network connections while maintaining persistent access.
+// REMEDIATION:
+// Isolate the affected system, investigate the specific kernel module activity, verify module authenticity, and consider a clean OS reinstallation if a rootkit is confirmed.
+// END_DESCRIPTION
+
 DeviceProcessEvents
 | where DeviceProcessEvents.Timestamp > ago(24h)
 // Removed OSPlatform filter and relying on Linux-specific commands instead

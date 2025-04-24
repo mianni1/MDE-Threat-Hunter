@@ -195,15 +195,7 @@ jobs:
             echo "has_findings=false" >> $env:GITHUB_OUTPUT
           }
 
-      # Unified artifact upload
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: daily-security-monitoring
-          path: results/daily-monitoring/
-          retention-days: 30
-          
-      # Upload to GitHub Security (enabled now that code scanning is on)
+      # Upload SARIF to GitHub Security tab instead of using artifacts
       - name: Upload to GitHub Security
         if: steps.run_queries.outputs.has_findings == 'true'
         uses: github/codeql-action/upload-sarif@v3
@@ -217,7 +209,7 @@ jobs:
         shell: bash
         run: cp results/daily-monitoring/daily-security-findings.sarif .github/security/daily-findings-$(date +%Y%m%d).sarif
       
-      # Send summary to 1Password
+      # Send summary to 1Password for secure storage
       - name: Record summary
         uses: 1password/load-secrets-action@v1
         with:
@@ -225,7 +217,7 @@ jobs:
           export-env: false
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_WRITE }}
-          TITLE: "Daily Security Report - $(date +%Y-%m-%d)"
+          TITLE: "Daily Security Monitoring Report - $(date +%Y-%m-%d)"
           VAULT: "Security Automation"
           CATEGORY: "Secure Note"
           NOTESPLAIN: |
@@ -233,6 +225,7 @@ jobs:
             
             Date: $(date)
             Run ID: ${{ github.run_id }}
+            Lookback Period: ${{ github.event.inputs.lookback_hours || '24' }} hours
             Findings detected: ${{ steps.run_queries.outputs.has_findings == 'true' && 'Yes' || 'No' }}
             ${{ steps.run_queries.outputs.has_findings == 'true' && format('Number of findings: {0}', steps.run_queries.outputs.total_findings) || 'No security issues detected in the past 24 hours.' }}
             

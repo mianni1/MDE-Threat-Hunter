@@ -1,3 +1,15 @@
+// DESCRIPTION:
+// Detection of unusual user logon patterns that may indicate account compromise or unauthorised access.
+// TECHNICAL:
+// This alert identifies anomalous authentication patterns by establishing baseline behaviour over 30 days and flagging deviations such as: new logon hours, unusual logon types, first-time account usage on devices, weekend activity, after-hours access, or connections from new remote devices.
+// MITRE_ATTACK:
+// T1078 (Valid Accounts), T1021 (Remote Services), T1550 (Use Alternate Authentication Material)
+// IMPACT:
+// Compromised credentials may be used to access sensitive systems and data, potentially leading to data theft or further network compromise.
+// REMEDIATION:
+// Investigate the unusual logon activity, verify with the user if it was legitimate, consider forcing a password reset, and implement multi-factor authentication if not already in place.
+// END_DESCRIPTION
+
 // Detect unusual logon patterns including first-time access and unusual hours
 let lookback_days = 30;
 let recent_window = 1d;
@@ -13,6 +25,7 @@ let known_patterns = (
         LogonCount = count()
         by DeviceLogonEvents.DeviceName
 );
+
 DeviceLogonEvents
 | where DeviceLogonEvents.Timestamp > ago(recent_window)
 | where DeviceLogonEvents.ActionType in ("LogonSuccess", "LogonFailed")
