@@ -1,8 +1,8 @@
-name: Run MDE Advanced Hunting Queries
+name: MDE Queries
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-run-name: "MDE Queries - Secure Run (${{ github.event_name }})"
+run-name: "MDE Queries (${{ github.event_name }})"
 
 on:
   push:
@@ -35,7 +35,7 @@ env:
 jobs:
   run-queries:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
-    name: Execute MDE Hunting Queries
+    name: Execute Queries
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
 
@@ -122,6 +122,8 @@ jobs:
       # Check and update PowerShell modules
       - name: Manage PowerShell modules
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           # Configure PSGallery
           if (-not (Get-PSRepository -Name PSGallery).InstallationPolicy -eq 'Trusted') {
@@ -185,11 +187,14 @@ jobs:
           MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
           MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
           MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
       
       # Execute MDE queries
       - name: Run MDE queries
         id: run_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $ErrorActionPreference = 'Stop'
           
@@ -281,6 +286,8 @@ jobs:
       # Generate comprehensive report
       - name: Generate reports
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $sarifFile = "results/mde-security-findings.sarif"
           

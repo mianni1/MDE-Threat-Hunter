@@ -28,7 +28,7 @@ env:
 jobs:
   # Main environment preparation job
   prepare-environment:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
     name: Prepare Hunting Environment
     runs-on: [self-hosted, Linux, X64]
     outputs:
@@ -71,6 +71,15 @@ jobs:
           
           echo "disk_status=OK" >> $GITHUB_OUTPUT
 
+      # Load 1Password secrets in prepare-environment job
+      - name: Load secrets
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
+      
       # Advanced multi-layer caching
       # 1. Long-term stable cache for PowerShell binaries
       - name: Cache PowerShell binaries
@@ -118,6 +127,8 @@ jobs:
       # Check and update PowerShell modules if needed
       - name: Manage PowerShell modules
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $ErrorActionPreference = 'Stop'
           
@@ -177,6 +188,8 @@ jobs:
       - name: Validate queries
         id: validate_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           Write-Host "Validating KQL query syntax..."
           & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
@@ -189,6 +202,8 @@ jobs:
       - name: Prepare query groups
         id: prepare_groups
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $queries = Get-ChildItem -Path "queries" -Filter "*.kql" | Select-Object -ExpandProperty Name
           
@@ -231,7 +246,7 @@ jobs:
   # Run queries for each platform category in parallel
   hunt-parallel:
     # only run if a valid matrix was generated
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')) && needs.prepare-environment.outputs.matrix != ''
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')) && needs.prepare-environment.outputs.matrix != ''
     name: Hunt - ${{ matrix.group_name }}
     needs: prepare-environment
     runs-on: [self-hosted, Linux, X64]
@@ -273,11 +288,14 @@ jobs:
           MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
           MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
           MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
       
       # Execute queries for this group
       - name: Run queries
         id: run_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $ErrorActionPreference = 'Stop'
           $lookbackDays = '${{ github.event.inputs.lookback_days }}' 
@@ -378,7 +396,7 @@ jobs:
   
   # Aggregate and report all findings
   aggregate-results:
-    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master'))
+    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master'))
     name: Aggregate Results
     needs: [prepare-environment, hunt-parallel]
     runs-on: [self-hosted, Linux, X64]
@@ -389,15 +407,14 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
       
-      # Use shared cache from prepare-environment
-      - name: Cache PowerShell modules
-        uses: actions/cache@v3
+      # Load 1Password secrets for the aggregate-results job
+      - name: Load secrets
+        uses: 1password/load-secrets-action@v1
         with:
-          path: ~/.local/share/powershell/Modules
-          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
-          restore-keys: |
-            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
-            ${{ runner.os }}-pwsh-modules-
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
       
       # Create output directories
       - name: Create output directories

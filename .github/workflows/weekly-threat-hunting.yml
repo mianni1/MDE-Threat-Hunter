@@ -3,7 +3,7 @@ run-name: Weekly Hunting - ${{ github.event.inputs.lookback_days || '7' }} Day L
 
 on:
   push:
-    branches: [Staging]
+    branches: [staging]
   schedule:
     - cron: '0 2 * * 0'  # Run weekly on Sundays at 2:00 AM
   workflow_dispatch:
@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   run-comprehensive-hunting:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
     name: Weekly Threat Hunting Analysis
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 60
@@ -107,6 +107,8 @@ jobs:
       - name: Validate queries
         id: validate_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
           if ($LASTEXITCODE -ne 0) {
@@ -124,11 +126,14 @@ jobs:
           MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
           MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
           MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
       
       # Execute queries
       - name: Run hunting queries
         id: run_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $lookbackDays = '${{ github.event.inputs.lookback_days }}' 
           $lookbackDays = if ($lookbackDays -and $lookbackDays -ne '') { $lookbackDays } else { '7' }

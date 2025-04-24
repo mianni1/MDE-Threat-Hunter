@@ -1,5 +1,5 @@
-name: Check Self-Hosted Runner Status
-run-name: Runner Health Check (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
+name: Runner Status
+run-name: Runner Check (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Push' }})
 
 on:
   push:
@@ -14,8 +14,8 @@ permissions:
 
 jobs:
   check-runner-health:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
-    name: Runner Health Check
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
+    name: Check Health
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 5
 
@@ -57,6 +57,15 @@ jobs:
             pwsh -Command "Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser"
           fi
       
+      # Load 1Password secrets
+      - name: Load secrets
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
+      
       # Simplified health check
       - name: Check runner health
         id: health_check
@@ -70,6 +79,8 @@ jobs:
       - name: Check PS modules
         id: ps_modules
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           # Check Microsoft.Graph.Security module
           $moduleIssues = $false
@@ -112,6 +123,8 @@ jobs:
       # Validate KQL queries
       - name: Validate queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
           if ($LASTEXITCODE -ne 0) {

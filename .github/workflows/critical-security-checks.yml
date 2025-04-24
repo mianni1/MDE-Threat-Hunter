@@ -1,8 +1,8 @@
-name: Critical Security Checks
+name: Critical Checks
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-run-name: Critical Checks - ${{ github.event.inputs.lookback_hours || '6' }}h (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
+run-name: Critical Checks (${{ github.event.inputs.lookback_hours || '6' }}h)
 
 on:
   push:
@@ -27,7 +27,7 @@ permissions:
 jobs:
   run-critical-queries:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
-    name: Critical Security Monitoring
+    name: Monitor Critical Threats
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10
 
@@ -84,10 +84,13 @@ jobs:
           MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
           MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
           MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
       
       - name: Run critical queries
         id: run_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $lookbackHours = '${{ github.event.inputs.lookback_hours }}' 
           $lookbackHours = if ($lookbackHours -and $lookbackHours -ne '') { $lookbackHours } else { '6' }

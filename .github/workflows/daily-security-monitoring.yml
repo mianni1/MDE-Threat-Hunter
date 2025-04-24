@@ -1,5 +1,5 @@
-name: Daily Security Monitoring
-run-name: Daily Monitoring - ${{ github.event.inputs.lookback_hours || '24' }}h (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Staging Push' }})
+name: Daily Monitoring
+run-name: Daily Scan (${{ github.event.inputs.lookback_hours || '24' }}h)
 
 on:
   push:
@@ -23,8 +23,8 @@ permissions:
 
 jobs:
   run-standard-queries:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/Master')
-    name: Daily Security Monitoring
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
+    name: Run Standard Scans
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
 
@@ -85,6 +85,8 @@ jobs:
       - name: Validate queries
         id: validate_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
           if ($LASTEXITCODE -ne 0) {
@@ -102,11 +104,14 @@ jobs:
           MDE_TENANT_ID: op://Security Automation/MDE API Credentials/MDE_TENANT_ID
           MDE_CLIENT_ID: op://Security Automation/MDE API Credentials/MDE_CLIENT_ID
           MDE_CLIENT_SECRET: op://Security Automation/MDE API Credentials/MDE_CLIENT_SECRET
+          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
       
       # Execute daily monitoring queries
       - name: Run monitoring queries
         id: run_queries
         shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
         run: |
           $lookbackHours = '${{ github.event.inputs.lookback_hours }}' 
           $lookbackHours = if ($lookbackHours -and $lookbackHours -ne '') { $lookbackHours } else { '24' }
