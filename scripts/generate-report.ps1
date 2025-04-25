@@ -39,6 +39,300 @@ function Write-Log {
     }
 }
 
+# Export findings to HTML report using PSWriteHTML module
+function New-HTMLReport {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [hashtable]$QueryResults,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$OutputPath,
+        
+        [Parameter(Mandatory=$false)]
+        [string]$ReportTitle = "Threat Hunting Report"
+    )
+    
+    try {
+        Write-Log "Generating HTML report: $OutputPath"
+        
+        # Check if PSWriteHTML module is available
+        if (-not (Get-Module -ListAvailable -Name "PSWriteHTML")) {
+            Write-Log "PSWriteHTML module not found, trying to install it" -Level "WARNING"
+            try {
+                Install-Module -Name PSWriteHTML -Force -Scope CurrentUser -ErrorAction Stop
+            }
+            catch {
+                Write-Log "Failed to install PSWriteHTML module: $_" -Level "ERROR"
+                
+                # Generate a simple HTML report without PSWriteHTML
+                $basicHtml = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>$ReportTitle</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background-color: #0078d4; color: white; padding: 20px; border-radius: 5px; }
+        .content { margin-top: 20px; }
+        .finding { margin-bottom: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .high { border-left: 5px solid #d13438; }
+        .medium { border-left: 5px solid #ff8c00; }
+        .low { border-left: 5px solid #3b78ff; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f2f2f2; }
+        .timestamp { color: #666; font-size: 0.8em; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>$ReportTitle</h1>
+        <p>Generated on $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")</p>
+    </div>
+    <div class="content">
+"@
+                
+                foreach ($queryName in $QueryResults.Keys) {
+                    $results = $QueryResults[$queryName]
+                    $displayName = $queryName -replace '_', ' ' -replace '.kql', '' -replace '.csv', ''
+                    $displayName = (Get-Culture).TextInfo.ToTitleCase($displayName)
+                    
+                    $enhancedContext = Get-EnhancedThreatContext -Results $results -QueryName $queryName
+                    $detectionDescription = Get-DetectionDescription -QueryName $queryName -Results $results
+                    
+                    $severityClass = "medium"
+                    if ($queryName -match "(credential_dumping|defense_evasion|ransomware|malware|privilege|lateral_movement)") {
+                        $severityClass = "high"
+                    } elseif ($queryName -match "(monitoring|activity)") {
+                        $severityClass = "low"
+                    }
+                    
+                    $basicHtml += @"
+        <div class="finding $severityClass">
+            <h2>$displayName</h2>
+            <p><strong>Findings:</strong> $($results.Count) events detected</p>
+            <p><strong>Description:</strong> $($detectionDescription.Description)</p>
+            <p><strong>MITRE ATT&CK:</strong> $($detectionDescription.MitreAttack)</p>
+            <p><strong>Impact:</strong> $($detectionDescription.Impact)</p>
+            <p><strong>Remediation:</strong> $($detectionDescription.Remediation)</p>
+
+            <h3>Affected Systems</h3>
+            <p>Devices: $($enhancedContext.AffectedDevices.Keys.Count) | Users: $($enhancedContext.AffectedUsers.Keys.Count)</p>
+
+            <h3>Sample Events</h3>
+            <table>
+                <tr>
+"@
+                    
+                    if ($results.Count -gt 0) {
+                        $sampleResult = $results[0]
+                        $properties = $sampleResult.PSObject.Properties.Name | Where-Object { $_ -ne "ReportId" } | Select-Object -First 6
+                        
+                        foreach ($prop in $properties) {
+                            $basicHtml += "<th>$prop</th>"
+                        }
+                        
+                        $basicHtml += "</tr>"
+                        
+                        $sampleCount = [Math]::Min(5, $results.Count)
+                        for ($i = 0; $i -lt $sampleCount; $i++) {
+                            $result = $results[$i]
+                            $basicHtml += "<tr>"
+                            
+                            foreach ($prop in $properties) {
+                                $value = $result.$prop
+                                if ($prop -eq "Timestamp") {
+                                    $basicHtml += "<td class='timestamp'>$value</td>"
+                                } else {
+                                    $basicHtml += "<td>$value</td>"
+                                }
+                            }
+                            
+                            $basicHtml += "</tr>"
+                        }
+                    }
+                    
+                    $basicHtml += @"
+            </table>
+        </div>
+"@
+                }
+                
+                $basicHtml += @"
+    </div>
+</body>
+</html>
+"@
+                
+                Set-Content -Path $OutputPath -Value $basicHtml -Force
+                Write-Log "Created basic HTML report as fallback" -Level "WARNING"
+                return $true
+            }
+        }
+        
+        # Import PSWriteHTML if not already imported
+        Import-Module -Name PSWriteHTML -ErrorAction Stop
+        
+        $threatSummary = @()
+        $allDevices = @{}
+        $allUsers = @{}
+        $totalEvents = 0
+        
+        foreach ($queryName in $QueryResults.Keys) {
+            $results = $QueryResults[$queryName]
+            $totalEvents += $results.Count
+            
+            $enhancedContext = Get-EnhancedThreatContext -Results $results -QueryName $queryName
+            $detectionDescription = Get-DetectionDescription -QueryName $queryName -Results $results
+            
+            $displayName = $queryName -replace '_', ' ' -replace '.kql', '' -replace '.csv', ''
+            $displayName = (Get-Culture).TextInfo.ToTitleCase($displayName)
+            
+            $threatSummary += [PSCustomObject]@{
+                ThreatType = $displayName
+                EventCount = $results.Count
+                RiskScore = $enhancedContext.RiskScore
+                AffectedDevices = $enhancedContext.AffectedDevices.Keys.Count
+                AffectedUsers = $enhancedContext.AffectedUsers.Keys.Count
+                FirstDetection = $enhancedContext.FirstDetection
+                LastDetection = $enhancedContext.MostRecentDetection
+            }
+            
+            foreach ($device in $enhancedContext.AffectedDevices.Keys) {
+                if (-not $allDevices.ContainsKey($device)) {
+                    $allDevices[$device] = @()
+                }
+                $allDevices[$device] += $displayName
+            }
+            
+            foreach ($user in $enhancedContext.AffectedUsers.Keys) {
+                if (-not $allUsers.ContainsKey($user)) {
+                    $allUsers[$user] = @{
+                        ThreatTypes = @()
+                        IsAdmin = $enhancedContext.AffectedUsers[$user].IsAdmin
+                    }
+                }
+                $allUsers[$user].ThreatTypes += $displayName
+            }
+        }
+        
+        $deviceSummary = @()
+        foreach ($device in $allDevices.Keys) {
+            $deviceSummary += [PSCustomObject]@{
+                DeviceName = $device
+                ThreatCount = ($allDevices[$device] | Select-Object -Unique).Count
+                ThreatTypes = ($allDevices[$device] | Select-Object -Unique) -join ", "
+            }
+        }
+        
+        $userSummary = @()
+        foreach ($user in $allUsers.Keys) {
+            $userSummary += [PSCustomObject]@{
+                UserName = $user
+                IsAdmin = $allUsers[$user].IsAdmin
+                ThreatCount = ($allUsers[$user].ThreatTypes | Select-Object -Unique).Count
+                ThreatTypes = ($allUsers[$user].ThreatTypes | Select-Object -Unique) -join ", "
+            }
+        }
+        
+        # Generate HTML report using PSWriteHTML
+        New-HTML -TitleText $ReportTitle -FilePath $OutputPath {
+            New-HTMLHeader {
+                New-HTMLText -Text $ReportTitle -Color '#0078d4' -FontSize 24
+                New-HTMLText -Text "Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -Color '#666666'
+            }
+            
+            New-HTMLSection -HeaderText "Executive Summary" -CanCollapse {
+                New-HTMLPanel {
+                    New-HTMLText -Text "This report contains details about $totalEvents potential security events detected across $($allDevices.Keys.Count) devices and affecting $($allUsers.Keys.Count) user accounts." -FontSize 14
+                }
+                
+                if ($threatSummary.Count -gt 0) {
+                    New-HTMLTable -DataTable $threatSummary -HideFooter
+                }
+            }
+            
+            if ($deviceSummary.Count -gt 0) {
+                New-HTMLSection -HeaderText "Affected Devices" -CanCollapse {
+                    New-HTMLTable -DataTable $deviceSummary -HideFooter
+                }
+            }
+            
+            if ($userSummary.Count -gt 0) {
+                New-HTMLSection -HeaderText "Affected Users" -CanCollapse {
+                    New-HTMLTable -DataTable $userSummary -HideFooter
+                }
+            }
+            
+            foreach ($queryName in $QueryResults.Keys) {
+                $results = $QueryResults[$queryName]
+                $enhancedContext = Get-EnhancedThreatContext -Results $results -QueryName $queryName
+                $detectionDescription = Get-DetectionDescription -QueryName $queryName -Results $results
+                
+                $displayName = $queryName -replace '_', ' ' -replace '.kql', '' -replace '.csv', ''
+                $displayName = (Get-Culture).TextInfo.ToTitleCase($displayName)
+                
+                $headerColor = "Orange"
+                if ($queryName -match "(credential_dumping|defense_evasion|ransomware|malware|privilege|lateral_movement)") {
+                    $headerColor = "Red"
+                } elseif ($queryName -match "(monitoring|activity)") {
+                    $headerColor = "Blue"
+                }
+                
+                New-HTMLSection -HeaderText $displayName -HeaderBackGroundColor $headerColor -HeaderTextColor White -CanCollapse {
+                    New-HTMLPanel {
+                        New-HTMLText -Text $detectionDescription.Description -FontSize 14
+                        New-HTMLText -Text "<b>MITRE ATT&CK:</b> $($detectionDescription.MitreAttack)" -FontSize 12
+                        New-HTMLText -Text "<b>First Detection:</b> $($enhancedContext.FirstDetection)" -FontSize 12
+                        New-HTMLText -Text "<b>Last Detection:</b> $($enhancedContext.MostRecentDetection)" -FontSize 12
+                        New-HTMLText -Text "<b>Impact:</b> $($detectionDescription.Impact)" -FontSize 12
+                        New-HTMLText -Text "<b>Remediation:</b> $($detectionDescription.Remediation)" -FontSize 12
+                    }
+                    
+                    if ($enhancedContext.ThreatIndicators.Count -gt 0) {
+                        New-HTMLSection -HeaderText "Key Indicators" -CanCollapse {
+                            $indicators = @()
+                            foreach ($indicator in $enhancedContext.ThreatIndicators | Select-Object -First 10) {
+                                $indicators += [PSCustomObject]@{
+                                    Type = $indicator.Type
+                                    Value = $indicator.Value
+                                    Context = $indicator.Context
+                                }
+                            }
+                            New-HTMLTable -DataTable $indicators -HideFooter
+                        }
+                    }
+                    
+                    if ($results.Count -gt 0) {
+                        New-HTMLSection -HeaderText "Event Details" -CanCollapse {
+                            # Format the events for HTML display
+                            $formattedEvents = @()
+                            foreach ($result in $results) {
+                                $obj = [PSCustomObject]@{}
+                                foreach ($prop in $result.PSObject.Properties) {
+                                    if ($prop.Name -ne "ReportId") {
+                                        $obj | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value
+                                    }
+                                }
+                                $formattedEvents += $obj
+                            }
+                            New-HTMLTable -DataTable $formattedEvents -HideFooter
+                        }
+                    }
+                }
+            }
+        }
+        
+        Write-Log "HTML report generated successfully at $OutputPath"
+        return $true
+    }
+    catch {
+        Write-Log "Error generating HTML report: $_" -Level ERROR
+        return $false
+    }
+}
+
 # Extract detection details from KQL files
 function Get-DetectionDescription {
     param (
