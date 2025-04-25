@@ -439,86 +439,90 @@ function Execute-Query {
             }
         }
         
-        $outputDirectory = Split-Path -Path $OutputFilePath -Parent
-        if (-not (Test-Path -Path $outputDirectory)) {
-            New-Item -Path $outputDirectory -ItemType Directory -Force | Out-Null
-            Write-Log "Created directory: $outputDirectory" -Level INFO
-        }
-        
-        if ($results.Count -gt 0) {
-            Write-Log "Processing $($results.Count) results" -Level INFO
+        if ($OutputFilePath) {
+            Write-Log "Writing results to $OutputFilePath" -Level INFO
             
-            if (-not $SkipSanitization) {
-                $sanitisedResults = $results | ForEach-Object {
-                    $obj = [PSCustomObject]@{}
-                    foreach($prop in $_.PSObject.Properties) {
-                        $value = switch($prop.Name) {
-                            "DeviceName" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "DEVICE-NAME" } }
-                            "RegistryKey" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "REGISTRY-KEY" } }
-                            "AccountName" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "USERNAME" } }
-                            "FilePath" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "FILE-PATH" } }
-                            "FolderPath" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "FOLDER-PATH" } }
-                            "IP" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "0.0.0.0" } }
-                            "LocalIP" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "0.0.0.0" } }
-                            "RemoteIP" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "0.0.0.0" } }
-                            "CommandLine" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "COMMAND-LINE" } }
-                            "ProcessCommandLine" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "PROCESS-COMMAND-LINE" } }
-                            "InitiatingProcessCommandLine" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "INITIATING-PROCESS-COMMAND-LINE" } }
-                            "DeviceId" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "DEVICE-ID" } }
-                            "Timestamp" { if($prop.Value) { (Get-Date $prop.Value).ToString("yyyy-MM-ddTHH:mm:ss.fffZ") } else { (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffZ") } }
-                            default { $prop.Value }
+            $outputDirectory = Split-Path -Path $OutputFilePath -Parent
+            if (-not (Test-Path -Path $outputDirectory)) {
+                New-Item -Path $outputDirectory -ItemType Directory -Force | Out-Null
+                Write-Log "Created directory: $outputDirectory" -Level INFO
+            }
+            
+            if ($results -and $results.Count -gt 0) {
+                Write-Log "Processing $($results.Count) results" -Level INFO
+                
+                if (-not $SkipSanitization) {
+                    $sanitisedResults = $results | ForEach-Object {
+                        $obj = [PSCustomObject]@{}
+                        foreach($prop in $_.PSObject.Properties) {
+                            $value = switch($prop.Name) {
+                                "DeviceName" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "DEVICE-NAME" } }
+                                "RegistryKey" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "REGISTRY-KEY" } }
+                                "AccountName" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "USERNAME" } }
+                                "FilePath" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "FILE-PATH" } }
+                                "FolderPath" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "FOLDER-PATH" } }
+                                "IP" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "0.0.0.0" } }
+                                "LocalIP" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "0.0.0.0" } }
+                                "RemoteIP" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "0.0.0.0" } }
+                                "CommandLine" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "COMMAND-LINE" } }
+                                "ProcessCommandLine" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "PROCESS-COMMAND-LINE" } }
+                                "InitiatingProcessCommandLine" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "INITIATING-PROCESS-COMMAND-LINE" } }
+                                "DeviceId" { if($UseCredentials -and $prop.Value) { $prop.Value } else { "DEVICE-ID" } }
+                                "Timestamp" { if($prop.Value) { (Get-Date $prop.Value).ToString("yyyy-MM-ddTHH:mm:ss.fffZ") } else { (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffZ") } }
+                                default { $prop.Value }
+                            }
+                            $obj | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $value
                         }
-                        $obj | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $value
+                        $obj
                     }
-                    $obj
+                    $exportResults = $sanitisedResults
+                } else {
+                    $exportResults = $results
                 }
-                $exportResults = $sanitisedResults
-            } else {
-                $exportResults = $results
-            }
-        
-            Write-Log "Exporting results to CSV" -Level INFO
             
-            try {
-                $exportResults | Export-Csv -Path $OutputFilePath -NoTypeInformation -Force -ErrorAction Stop
-                Write-Log "CSV export successful: $OutputFilePath" -Level INFO
-            }
-            catch {
-                Write-Log "Error during CSV export: $_" -Level ERROR
+                Write-Log "Exporting results to CSV" -Level INFO
                 
-                Write-Log "Attempting manual CSV creation" -Level WARNING
-                
-                $headers = ($exportResults[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ","
-                $csvData = $headers + [Environment]::NewLine
-                
-                foreach ($row in $exportResults) {
-                    $rowValues = ($row.PSObject.Properties | ForEach-Object { 
-                        if ($null -eq $_.Value) { '""' } 
-                        else { '"' + $_.Value.ToString().Replace('"', '""') + '"' }
-                    }) -join ","
-                    $csvData += $rowValues + [Environment]::NewLine
+                try {
+                    $exportResults | Export-Csv -Path $OutputFilePath -NoTypeInformation -Force -ErrorAction Stop
+                    Write-Log "CSV export successful: $OutputFilePath" -Level INFO
+                }
+                catch {
+                    Write-Log "Error during CSV export: $_" -Level ERROR
+                    
+                    Write-Log "Attempting manual CSV creation" -Level WARNING
+                    
+                    $headers = ($exportResults[0].PSObject.Properties | ForEach-Object { $_.Name }) -join ","
+                    $csvData = $headers + [Environment]::NewLine
+                    
+                    foreach ($row in $exportResults) {
+                        $rowValues = ($row.PSObject.Properties | ForEach-Object { 
+                            if ($null -eq $_.Value) { '""' } 
+                            else { '"' + $_.Value.ToString().Replace('"', '""') + '"' }
+                        }) -join ","
+                        $csvData += $rowValues + [Environment]::NewLine
+                    }
+                    
+                    $csvData | Out-File -FilePath $OutputFilePath -Encoding utf8 -Force
+                    Write-Log "Manual CSV export successful" -Level INFO
                 }
                 
-                $csvData | Out-File -FilePath $OutputFilePath -Encoding utf8 -Force
-                Write-Log "Manual CSV export successful" -Level INFO
-            }
-            
-            if ($ReturnResults) {
-                return $results
+                if ($ReturnResults) {
+                    return $results
+                }
+                else {
+                    return $results.Count
+                }
             }
             else {
-                return $results.Count
-            }
-        }
-        else {
-            Write-Log "No results found" -Level INFO
-            "" | Out-File -FilePath $OutputFilePath -Force
-            
-            if ($ReturnResults) {
-                return @()
-            }
-            else {
-                return 0
+                Write-Log "No results found" -Level INFO
+                "" | Out-File -FilePath $OutputFilePath -Force
+                
+                if ($ReturnResults) {
+                    return @()
+                }
+                else {
+                    return 0
+                }
             }
         }
     }

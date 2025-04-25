@@ -64,7 +64,7 @@ function Test-KqlQuery {
             }
 
             # Check for missing space after comment markers
-            if ($content -match '//[^ /t\r\n]') {
+            if ($content -match '//[^\s]') {
                 $issues.Add('Missing space after // comment')
             }
 
