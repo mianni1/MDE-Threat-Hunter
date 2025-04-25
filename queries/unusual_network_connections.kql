@@ -14,7 +14,7 @@ let lookback_days = 7;
 
 DeviceNetworkEvents
 | where Timestamp > ago(lookback_days * 1d)
-| where ProcessFileName in~ (
+| where (ProcessFileName in~ (
     "nc", "ncat", "netcat", "socat", "curl", "wget", 
     "python", "python3", "perl", "ruby", "ssh"
 )
@@ -25,7 +25,7 @@ or RemotePort in (
 or ProcessCommandLine has_any (
     "POST", "reverse", "bind", "-R", "ssh -D", "-L", 
     "proxy", "socks", "-e sh", "-e bash", "mkfifo", "mknod"
-)
+))
 | where not(RemoteUrl has_any("github", "microsoft", "google", "apple", "ubuntu", "amazon", "amd", "intel"))
 | extend RiskScore = case(
     ProcessCommandLine has_any("-e sh", "-e bash", "reverse shell"), 10,
