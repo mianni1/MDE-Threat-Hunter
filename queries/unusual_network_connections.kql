@@ -1,56 +1,55 @@
 // DESCRIPTION:
-// Detection of unusual outbound network connections that might indicate command and control (C2) communication or data exfiltration attempts.
+// Detection of suspicious network connections from Linux systems that may indicate command and control activity or data exfiltration.
 // TECHNICAL:
-// This alert triggers when processes other than common browsers or web servers establish connections to suspicious ports (22, 23, 445, 1433, 3389, 4444, 5800, 5900, 8080, 8443, or ports >= 6000) to non-private IP addresses. The connections are enriched with geographical information.
+// This alert identifies unusual network connections including direct connections to uncommon ports, use of non-standard tools for connections, and connections to potential C2 infrastructure.
 // MITRE_ATTACK:
-// T1043 (Command and Control), T1071 (Application Layer Protocol), T1090 (Proxy), T1219 (Remote Access Software)
+// T1219 (Remote Access Software), T1105 (Ingress Tool Transfer), T1571 (Non-Standard Port), T1095 (Non-Application Layer Protocol)
 // IMPACT:
-// These connections may indicate exfiltration of sensitive data, remote control of systems, or malware communicating with command servers.
+// Attackers may be establishing communication with command and control infrastructure, transferring data out of the environment, or bypassing network security controls.
 // REMEDIATION:
-// Investigate the connecting process, examine the destination IP reputation, review any data transferred, and consider blocking suspicious connections.
+// Investigate the destination IP addresses, review the legitimacy of the connections, isolate affected systems if malicious activity is confirmed.
 // END_DESCRIPTION
 
-let lookback_hours = 24;
+let lookback_days = 7;
 
 DeviceNetworkEvents
-| where Timestamp > ago(lookback_hours * 1h)
-| where ActionType == "ConnectionSuccess"
-| where RemotePort in (22, 23, 445, 1433, 3389, 4444, 5800, 5900, 8080, 8443) or RemotePort >= 6000
-| where InitiatingProcessFileName !in~ (
-    "chrome.exe", "msedge.exe", "firefox.exe", "safari.exe", 
-    "iexplore.exe", "opera.exe", "brave.exe", "outlook.exe", 
-    "teams.exe", "w3wp.exe", "httpd.exe", "nginx.exe"
+| where Timestamp > ago(lookback_days * 1d)
+| where ProcessFileName in~ (
+    "nc", "ncat", "netcat", "socat", "curl", "wget", 
+    "python", "python3", "perl", "ruby", "ssh"
 )
-| where not(ipv4_is_private(RemoteIP))
-| extend GeoIPInfo = geo_info_from_ip_address(RemoteIP)
-| extend Country = tostring(parse_json(GeoIPInfo).country)
-| extend State = tostring(parse_json(GeoIPInfo).state)
-| extend City = tostring(parse_json(GeoIPInfo).city)
-| extend AbnormalPort = case(
-    RemotePort == 22, "SSH",
-    RemotePort == 23, "Telnet",
-    RemotePort == 445, "SMB",
-    RemotePort == 1433, "MSSQL",
-    RemotePort == 3389, "RDP",
-    RemotePort == 4444, "Common backdoor",
-    RemotePort == 5800 or RemotePort == 5900, "VNC",
-    RemotePort == 8080 or RemotePort == 8443, "Alt HTTP/S",
-    "High port"
+or RemotePort in (
+    22, 23, 1080, 1090, 4444, 4545, 5555, 6666, 6667, 
+    6668, 6669, 8080, 8081, 8088, 8443, 8888, 9001, 9050
 )
+or ProcessCommandLine has_any (
+    "POST", "reverse", "bind", "-R", "ssh -D", "-L", 
+    "proxy", "socks", "-e sh", "-e bash", "mkfifo", "mknod"
+)
+| where not(RemoteUrl has_any("github", "microsoft", "google", "apple", "ubuntu", "amazon", "amd", "intel"))
+| extend RiskScore = case(
+    ProcessCommandLine has_any("-e sh", "-e bash", "reverse shell"), 10,
+    ProcessFileName =~ "nc" and RemotePort in (4444, 6666, 9001), 8,
+    ProcessFileName in~ ("python", "perl", "ruby") and ProcessCommandLine has_any("socket(", "connect("), 7,
+    ProcessCommandLine has_any("proxy", "socks", "-D", "-L"), 6,
+    RemotePort in (8080, 8443, 4545), 5,
+    RemotePort in (22, 23), 4,
+    ProcessFileName in~ ("curl", "wget"), 3,
+    true, 1
+)
+| where RiskScore > 3
 | project
     Timestamp,
     DeviceName,
+    ProcessFileName,
+    ProcessCommandLine,
     LocalIP,
     LocalPort,
     RemoteIP,
     RemotePort,
-    AbnormalPort,
-    Country,
-    State,
-    City,
+    RemoteUrl,
     InitiatingProcessFileName,
     InitiatingProcessCommandLine,
-    InitiatingProcessFolderPath,
-    InitiatingProcessAccountName,
-    ReportId = hash_sha256(strcat(DeviceName, RemoteIP, tostring(RemotePort), tostring(Timestamp)))
-| order by Timestamp desc
+    ActionType,
+    RiskScore,
+    ReportId = hash_sha256(strcat(DeviceName, ProcessFileName, RemoteIP, tostring(Timestamp)))

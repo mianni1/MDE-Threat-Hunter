@@ -8,10 +8,8 @@
 // Validate whether these changes were authorised. Roll back any unauthorised changes and review associated user activity.
 // END_DESCRIPTION
 
-let time_range = ago(7d);
-
 DeviceEvents
-| where Timestamp >= time_range
+| where Timestamp > ago(7d)
 | where ActionType in~ ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")
 | extend ParsedFields = iff(isnotempty(AdditionalFields), parse_json(AdditionalFields), dynamic({}))
 | extend GroupName = tostring(ParsedFields.GroupName)
@@ -23,13 +21,8 @@ DeviceEvents
 | extend NormalisedGroup = tolower(GroupName)
 | where 
     NormalisedGroup has_any (
-        "admin", 
-        "administrator", 
-        "domain admins", 
-        "enterprise admins", 
-        "schema admins", 
-        "account operators", 
-        "backup operators"
+        "admin", "administrator", "domain admins", "enterprise admins", 
+        "schema admins", "account operators", "backup operators"
     )
     or GroupSid == "S-1-5-32-544"
 | project
