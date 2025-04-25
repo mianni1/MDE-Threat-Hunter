@@ -57,12 +57,14 @@ jobs:
         uses: actions/cache@v3
         with:
           path: |
-            ~/.local/share/powershell
-            /usr/bin/pwsh
-          key: ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-daily
+            ~/.local/share/powershell/Modules
+            # Explicitly exclude the pwsh binary symlink to prevent conflicts
+            !~/.local/share/powershell/*/pwsh
+            !~/.local/share/powershell/pwsh
+          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-daily
           restore-keys: |
-            ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-
-            ${{ runner.os }}-pwsh-
+            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-modules-
 
       # Install PowerShell only if not cached
       - name: Setup PowerShell

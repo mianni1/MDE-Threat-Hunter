@@ -17,6 +17,7 @@ param (
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12, [Net.SecurityProtocolType]::Tls13
 
+# Log messages with timestamp and level
 function Write-Log {
     param (
         [Parameter(Mandatory=$true)]
@@ -38,6 +39,7 @@ function Write-Log {
     }
 }
 
+# Extract detection details from KQL files
 function Get-DetectionDescription {
     param (
         [Parameter(Mandatory=$true)]
@@ -109,6 +111,7 @@ function Get-DetectionDescription {
         }
     }
     
+    # Return default description if KQL file not found or no description
     $formattedName = $baseName -replace '_', ' '
     return @{
         Description = "Detection of potentially suspicious activity related to $formattedName."
@@ -118,6 +121,7 @@ function Get-DetectionDescription {
     }
 }
 
+# Create enhanced threat context based on query results
 function Get-EnhancedThreatContext {
     param (
         [Parameter(Mandatory=$true)]
@@ -210,6 +214,7 @@ function Get-EnhancedThreatContext {
                     }
                 }
                 catch {
+                    # Continue if timestamp parsing fails
                 }
             }
             
@@ -264,6 +269,7 @@ function Get-EnhancedThreatContext {
             }
         }
         
+        # Process threat indicators
         $threatIndicators = @()
         
         if ($result.PSObject.Properties.Name -contains "ProcessCommandLine" -and $result.ProcessCommandLine) {
@@ -310,6 +316,7 @@ function Get-EnhancedThreatContext {
             }
         }
         
+        # Add unique indicators
         foreach ($indicator in $threatIndicators) {
             $exists = $false
             foreach ($existingIndicator in $context.ThreatIndicators) {
@@ -325,6 +332,7 @@ function Get-EnhancedThreatContext {
         }
     }
     
+    # Calculate risk score components
     $deviceScore = [Math]::Min(25, $context.AffectedDevices.Count * 5)
     $adminUserCount = ($context.AffectedUsers.GetEnumerator() | Where-Object { $_.Value.IsAdmin -eq $true }).Count
     $adminScore = [Math]::Min(25, $adminUserCount * 10)
@@ -349,6 +357,7 @@ function Get-EnhancedThreatContext {
     return $context
 }
 
+# Format data as markdown table
 function Format-MarkdownTable {
     param (
         [Parameter(Mandatory=$true)]
@@ -381,6 +390,7 @@ function Format-MarkdownTable {
     return $table
 }
 
+# Generate SARIF security alert report
 function New-SecurityAlertReport {
     [CmdletBinding()]
     param (
@@ -468,6 +478,7 @@ function New-SecurityAlertReport {
                     "Low"
                 }
                 
+                # Format affected resources section
                 $affectedResourcesText = ""
                 if ($enhancedContext.AffectedDevices.Keys.Count -gt 0) {
                     $affectedResourcesText += "### Affected Devices ($($enhancedContext.AffectedDevices.Keys.Count))\n\n"
@@ -508,6 +519,7 @@ function New-SecurityAlertReport {
                     $affectedResourcesText += "$($userList -join "\n")\n\n"
                 }
                 
+                # Format threat indicators section
                 $threatIndicatorsText = ""
                 if ($enhancedContext.ThreatIndicators.Count -gt 0) {
                     $threatIndicatorsText = "### Key Threat Indicators\n\n"
@@ -517,6 +529,7 @@ function New-SecurityAlertReport {
                     $threatIndicatorsText += "\n"
                 }
                 
+                # Format detection timeline section
                 $detectionTimeText = ""
                 if ($enhancedContext.FirstDetection -and $enhancedContext.MostRecentDetection) {
                     $detectionPeriod = ($enhancedContext.MostRecentDetection - $enhancedContext.FirstDetection)
@@ -526,6 +539,7 @@ function New-SecurityAlertReport {
                     $detectionTimeText += "* Duration: $([Math]::Floor($detectionPeriod.TotalHours)) hours, $($detectionPeriod.Minutes) minutes\n\n"
                 }
                 
+                # Create rule definition
                 $rule = @{
                     id = $ruleId
                     name = $displayName.Replace(" ", "")
@@ -563,11 +577,12 @@ function New-SecurityAlertReport {
                 
                 $sarif.runs[0].tool.driver.rules += $rule
                 
+                # Create result entry
                 $result = @{
                     ruleId = $ruleId
                     level = $severity
                     message = @{
-                        text = "$displayName: $($results.Count) instances detected"
+                        text = "${displayName}: $($results.Count) instances detected"
                     }
                     locations = @(
                         @{
@@ -605,6 +620,7 @@ function New-SecurityAlertReport {
                     }
                 }
                 
+                # Add summarized properties
                 $summarizedProperties = @{ }
                 
                 if ($results.Count -gt 0) {
@@ -647,6 +663,7 @@ function New-SecurityAlertReport {
             }
         }
         
+        # Create output directory if it doesn't exist
         $outputDir = Split-Path -Path $SecurityAlertPath -Parent
         if (-not (Test-Path $outputDir)) {
             New-Item -Path $outputDir -ItemType Directory -Force | Out-Null
@@ -664,6 +681,7 @@ function New-SecurityAlertReport {
     }
 }
 
+# Export findings to consolidated CSV file
 function Export-FindingsToCsv {
     [CmdletBinding()]
     param (

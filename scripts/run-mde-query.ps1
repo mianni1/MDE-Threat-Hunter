@@ -1,4 +1,5 @@
 # MDE Query Execution Script
+# Executes KQL queries against Microsoft Defender for Endpoint API
 
 param(
     [Parameter(Mandatory=$false)]
@@ -46,6 +47,7 @@ param(
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12, [Net.SecurityProtocolType]::Tls13
 
+# Logs messages with timestamp and severity level
 function Write-Log {
     param (
         [Parameter(Mandatory=$true)]
@@ -63,6 +65,7 @@ function Write-Log {
     }
 }
 
+# Creates output variables for GitHub Actions workflows
 function Add-GithubOutput {
     param(
         [Parameter(Mandatory=$true)]
@@ -84,6 +87,7 @@ function Add-GithubOutput {
     }
 }
 
+# Validates KQL query syntax
 function Validate-QuerySyntax {
     param (
         [Parameter(Mandatory=$true)]
@@ -124,6 +128,7 @@ function Validate-QuerySyntax {
     }
 }
 
+# Retrieves authentication token for MDE API
 function Get-AuthToken {
     param (
         [Parameter(Mandatory=$true)]
@@ -140,7 +145,7 @@ function Get-AuthToken {
         Write-Log "Authenticating with Microsoft Graph API" -Level INFO
         
         if($ClientSecret) {
-            # Use service principal authentication
+            # Service principal auth
             $authBody = @{
                 grant_type    = "client_credentials"
                 client_id     = $ClientId
@@ -152,21 +157,18 @@ function Get-AuthToken {
             return $authResponse.access_token
         }
         else {
-            # Use interactive authentication if running manually
+            # Interactive auth
             Write-Log "No client secret provided, using Microsoft Graph SDK" -Level INFO
             
-            # Ensure Microsoft.Graph module exists
             if(-not (Get-Module -ListAvailable Microsoft.Graph.Security)) {
                 Write-Log "Microsoft Graph Security module not found, installing..." -Level INFO
                 Install-Module Microsoft.Graph.Security -Scope CurrentUser -Force -AllowClobber
             }
             
-            # Import the module if not already imported
             if(-not (Get-Module Microsoft.Graph.Security)) {
                 Import-Module Microsoft.Graph.Security -ErrorAction Stop
             }
             
-            # Connect with the specified tenant and client ID
             Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -Scopes "https://api.securitycenter.microsoft.com/.default" -ErrorAction Stop
             
             $context = Get-MgContext
@@ -184,6 +186,7 @@ function Get-AuthToken {
     }
 }
 
+# Executes query against MDE API and saves results
 function Execute-Query {
     param (
         [Parameter(Mandatory=$true)]
@@ -196,6 +199,7 @@ function Execute-Query {
     try {
         Write-Log "Executing MDE query" -Level INFO
         
+        # Add time filter if specified
         if ($LookbackHours) {
             if ($QueryText -notmatch "Timestamp\s*[><]=?\s*ago\(" -and $QueryText -notmatch "datetime_add\s*\(" -and $QueryText -notmatch "datetime\s*\([^)]*\)") {
                 Write-Log "Adding time filter with lookback of $LookbackHours hours" -Level INFO
@@ -225,19 +229,19 @@ function Execute-Query {
         $success = $false
         $exponentialBackoff = $RetryDelaySeconds
         
+        # Retry loop with exponential backoff
         while (-not $success -and $retryCount -lt $MaxRetries) {
             try {
                 Write-Log "Query attempt $($retryCount + 1) of $MaxRetries" -Level INFO
                 
                 if ($UseCredentials) {
-                    # Use actual MDE API with authentication
+                    # Use MDE API with authentication
                     if(-not $TenantId -or -not $ClientId) {
                         Write-Log "Missing tenant ID or client ID for authentication" -Level ERROR
                         throw "Authentication credentials missing"
                     }
                     
                     try {
-                        # Get authentication token
                         $token = Get-AuthToken -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret
                         
                         Write-Log "Sending request to MDE API" -Level INFO
@@ -251,17 +255,15 @@ function Execute-Query {
                             'Query' = $QueryText
                         } | ConvertTo-Json
                         
-                        # Add timeout and error handling
                         $apiParams = @{
                             Method      = "Post"
                             Uri         = "https://api.securitycenter.microsoft.com/api/advancedhunting/run"
                             Headers     = $headers
                             Body        = $body
-                            TimeoutSec  = 300  # 5 minutes timeout
+                            TimeoutSec  = 300
                             ErrorAction = "Stop"
                         }
                         
-                        # Make the API call with proper error handling
                         $apiResponse = $null
                         try {
                             $apiResponse = Invoke-RestMethod @apiParams
@@ -270,9 +272,9 @@ function Execute-Query {
                             $statusCode = [int]$_.Exception.Response.StatusCode
                             $statusDescription = $_.Exception.Response.StatusDescription
                             
+                            # Handle specific HTTP error codes
                             if ($statusCode -eq 401) {
                                 Write-Log "Authentication error (401): Token may have expired" -Level ERROR
-                                # Try to refresh token on auth errors
                                 if ($retryCount -lt $MaxRetries - 1) {
                                     Write-Log "Attempting to refresh authentication token" -Level INFO
                                     $token = Get-AuthToken -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret
@@ -286,13 +288,13 @@ function Execute-Query {
                             elseif ($statusCode -eq 429) {
                                 Write-Log "Rate limit exceeded (429): Backing off for $exponentialBackoff seconds" -Level WARNING
                                 Start-Sleep -Seconds $exponentialBackoff
-                                $exponentialBackoff *= 2  # Exponential back-off
+                                $exponentialBackoff *= 2
                                 throw [System.Net.WebException]::new("Rate limit exceeded, retrying with exponential backoff")
                             }
                             elseif ($statusCode -eq 503 -or $statusCode -eq 504) {
                                 Write-Log "Service unavailable ($statusCode): Retrying in $exponentialBackoff seconds" -Level WARNING
                                 Start-Sleep -Seconds $exponentialBackoff
-                                $exponentialBackoff *= 2  # Exponential back-off
+                                $exponentialBackoff *= 2
                                 throw [System.Net.WebException]::new("Service temporarily unavailable")
                             }
                             else {
@@ -317,7 +319,7 @@ function Execute-Query {
                         if ($retryCount -lt $MaxRetries) {
                             Write-Log "Error occurred: $($_.Exception.Message). Retrying in $exponentialBackoff seconds..." -Level WARNING
                             Start-Sleep -Seconds $exponentialBackoff
-                            $exponentialBackoff = [Math]::Min(60, $exponentialBackoff * 2)  # Cap at 60 seconds
+                            $exponentialBackoff = [Math]::Min(60, $exponentialBackoff * 2)
                         } else {
                             Write-Log "Maximum retries reached, giving up" -Level ERROR
                             throw
@@ -325,13 +327,11 @@ function Execute-Query {
                     }
                 }
                 else {
-                    # Use simulated results for testing
+                    # Generate simulated test data when not using API
                     Write-Log "Using simulated data (no API credentials provided)" -Level WARNING
                     
-                    # Generate more realistic simulated data based on query content
                     $simulatedResults = @()
                     
-                    # Detect the MDE table being queried to provide appropriate simulated fields
                     if ($QueryText -match "DeviceProcessEvents") {
                         $simulatedResults += [PSCustomObject]@{
                             Timestamp = (Get-Date).AddHours(-1).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
@@ -391,7 +391,6 @@ function Execute-Query {
                         }
                     }
                     else {
-                        # Generic simulated results for other queries
                         $simulatedResults += [PSCustomObject]@{
                             Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
                             DeviceId = "00000000-0000-0000-0000-000000000001"
@@ -402,10 +401,8 @@ function Execute-Query {
                         }
                     }
                     
-                    # Add a second simulated result for variety
                     if ($simulatedResults.Count -gt 0) {
                         $secondResult = $simulatedResults[0].PSObject.Copy()
-                        # Modify a few properties to make it different
                         if ($secondResult.PSObject.Properties.Name -contains "Timestamp") {
                             $secondResult.Timestamp = (Get-Date).AddHours(-3).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
                         }
@@ -433,7 +430,7 @@ function Execute-Query {
                 if ($retryCount -lt $MaxRetries) {
                     Write-Log "Retrying in $exponentialBackoff seconds..." -Level INFO
                     Start-Sleep -Seconds $exponentialBackoff
-                    $exponentialBackoff = [Math]::Min(60, $exponentialBackoff * 2)  # Cap at 60 seconds
+                    $exponentialBackoff = [Math]::Min(60, $exponentialBackoff * 2)
                 }
                 else {
                     Write-Log "Maximum retries reached, giving up" -Level ERROR
@@ -531,6 +528,7 @@ function Execute-Query {
     }
 }
 
+# Executes queries in a directory
 function Execute-QueryDirectory {
     param (
         [Parameter(Mandatory=$true)]

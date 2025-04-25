@@ -10,44 +10,46 @@
 // Investigate the unusual logon activity, verify with the user if it was legitimate, consider forcing a password reset, and implement multi-factor authentication if not already in place.
 // END_DESCRIPTION
 
-// Detect unusual logon patterns including first-time access and unusual hours
 let lookback_days = 30;
 let recent_window = 1d;
+
 let known_patterns = (
     DeviceLogonEvents
-    | where DeviceLogonEvents.Timestamp between(ago(lookback_days)..ago(recent_window))
-    | where DeviceLogonEvents.ActionType == "LogonSuccess"
+    | where Timestamp between (ago(lookback_days * 1d) .. ago(recent_window))
+    | where ActionType == "LogonSuccess"
+    | extend CleanRemoteDevice = tostring(RemoteDeviceName)
     | summarize 
-        KnownLogonHours = make_set(datetime_part("hour", DeviceLogonEvents.Timestamp)), 
-        KnownLogonTypes = make_set(DeviceLogonEvents.LogonType),
-        KnownLogonAccounts = make_set(DeviceLogonEvents.AccountName),
-        KnownRemoteDevices = make_set(iff(isempty(DeviceLogonEvents.RemoteDeviceName), "", DeviceLogonEvents.RemoteDeviceName)),
+        KnownLogonHours = make_set(datetime_part("hour", Timestamp)), 
+        KnownLogonTypes = make_set(LogonType),
+        KnownLogonAccounts = make_set(AccountName),
+        KnownRemoteDevices = make_set(CleanRemoteDevice),
         LogonCount = count()
-        by DeviceLogonEvents.DeviceName
+        by DeviceName
 );
 
 DeviceLogonEvents
-| where DeviceLogonEvents.Timestamp > ago(recent_window)
-| where DeviceLogonEvents.ActionType in ("LogonSuccess", "LogonFailed")
-| join kind=leftouter known_patterns on DeviceLogonEvents.DeviceName
-| extend IsWeekend = dayofweek(DeviceLogonEvents.Timestamp) == 0 or dayofweek(DeviceLogonEvents.Timestamp) == 6
-| extend CurrentHour = datetime_part("hour", DeviceLogonEvents.Timestamp)
+| where Timestamp > ago(recent_window)
+| where ActionType in ("LogonSuccess", "LogonFailed")
+| join kind=leftouter known_patterns on DeviceName
+| extend IsWeekend = dayofweek(Timestamp) == 0 or dayofweek(Timestamp) == 6
+| extend CurrentHour = datetime_part("hour", Timestamp)
 | extend IsNewLogonHour = array_index_of(KnownLogonHours, CurrentHour) == -1
-| extend IsNewLogonType = array_index_of(KnownLogonTypes, DeviceLogonEvents.LogonType) == -1
-| extend IsNewAccount = array_index_of(KnownLogonAccounts, DeviceLogonEvents.AccountName) == -1
-| extend IsNewRemoteDevice = iff(isempty(DeviceLogonEvents.RemoteDeviceName), false, array_index_of(KnownRemoteDevices, DeviceLogonEvents.RemoteDeviceName) == -1)
+| extend IsNewLogonType = array_index_of(KnownLogonTypes, LogonType) == -1
+| extend IsNewAccount = array_index_of(KnownLogonAccounts, AccountName) == -1
+| extend CleanRemoteDevice = tostring(RemoteDeviceName)
+| extend IsNewRemoteDevice = iff(isempty(CleanRemoteDevice), false, array_index_of(KnownRemoteDevices, CleanRemoteDevice) == -1)
 | extend IsAfterHours = CurrentHour < 6 or CurrentHour > 18
 | extend AnomalyFlags = pack_array(
     IsNewLogonHour, IsNewLogonType, IsNewAccount, IsNewRemoteDevice, IsWeekend, IsAfterHours)
 | extend AnomalyScore = array_sum(AnomalyFlags)
-| where AnomalyScore >= 2 or IsNewAccount == true
+| where AnomalyScore >= 2 or IsNewAccount
 | project
-    DeviceLogonEvents.Timestamp,
-    DeviceLogonEvents.DeviceName, 
-    DeviceLogonEvents.AccountName,
-    DeviceLogonEvents.RemoteDeviceName,
-    DeviceLogonEvents.RemoteIP,
-    DeviceLogonEvents.LogonType,
+    Timestamp,
+    DeviceName, 
+    AccountName,
+    RemoteDeviceName,
+    RemoteIP,
+    LogonType,
     IsNewAccount,
     IsNewLogonType,
     IsNewLogonHour,
@@ -55,6 +57,6 @@ DeviceLogonEvents
     IsWeekend,
     IsNewRemoteDevice,
     AnomalyScore,
-    DeviceLogonEvents.FailureReason,
-    DeviceLogonEvents.Application,
-    ReportId=hash(strcat(DeviceLogonEvents.DeviceName, DeviceLogonEvents.AccountName, DeviceLogonEvents.LogonType))
+    FailureReason,
+    Application,
+    ReportId = hash_sha256(strcat(DeviceName, AccountName, LogonType, tostring(Timestamp)))

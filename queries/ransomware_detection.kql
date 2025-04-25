@@ -1,50 +1,48 @@
 // DESCRIPTION:
-// Detection of potential ransomware activity based on file operations and suspicious process execution.
+// Detection of suspicious command execution on macOS systems that may indicate malicious activity.
 // TECHNICAL:
-// This alert is triggered when a system exhibits multiple indicators of ransomware activity including: creation of files with known ransomware extensions (.encrypted, .locked, .crypted, etc.), high volume of file modifications in a short timeframe, and execution of processes that perform suspicious operations like shadow copy deletion, encryption preparation, or system modification.
+// This alert identifies execution of potentially dangerous commands on macOS including script execution (osascript), file downloads (curl/wget), network connections (nc/netcat), permissions changes (chmod), service manipulation (launchctl), or privilege escalation (sudo). Focus is on commands not initiated from standard application directories.
 // MITRE_ATTACK:
-// T1486 (Data Encrypted for Impact), T1490 (Inhibit System Recovery), T1489 (Service Stop)
+// T1059.004 (Unix Shell), T1105 (Ingress Tool Transfer), T1059.002 (AppleScript), T1548.003 (Sudo and Sudo Caching)
 // IMPACT:
-// Files may be encrypted and inaccessible, potentially disrupting business operations and requiring recovery from backups.
+// Attackers may be downloading malicious payloads, executing malicious scripts, or attempting to gain elevated privileges.
 // REMEDIATION:
-// Immediately isolate affected systems, evaluate the scope of encryption, check for ransom notes, and initiate incident response procedures.
+// Investigate the process execution context, isolate affected systems if malicious activity is confirmed, and review security policies for script execution.
 // END_DESCRIPTION
 
-DeviceFileEvents
-| where DeviceFileEvents.Timestamp > ago(24h)
-| where DeviceFileEvents.ActionType == "FileCreated" or DeviceFileEvents.ActionType == "FileModified" 
-| where DeviceFileEvents.FileName endswith ".encrypted" or DeviceFileEvents.FileName endswith ".locked" or DeviceFileEvents.FileName endswith ".crypted" 
-  or DeviceFileEvents.FileName endswith ".crypt" or DeviceFileEvents.FileName endswith ".crypto" or DeviceFileEvents.FileName endswith ".enc" 
-  or DeviceFileEvents.FileName endswith ".ransom" or DeviceFileEvents.FileName endswith ".WNCRY" or DeviceFileEvents.FileName endswith ".wcry" 
-  or DeviceFileEvents.FileName endswith ".lock" or DeviceFileEvents.FileName endswith ".locky" or DeviceFileEvents.FileName endswith ".cerber" 
-  or DeviceFileEvents.FileName endswith ".zepto" or DeviceFileEvents.FileName endswith ".thor" or DeviceFileEvents.FileName endswith ".aesir" 
-  or DeviceFileEvents.FileName endswith ".sage" or DeviceFileEvents.FileName endswith ".petya"
-  or DeviceFileEvents.FolderPath has "DECRYPT_INSTRUCTION" or DeviceFileEvents.FileName startswith "README.txt"
-| summarize
-    FileCount = count(),
-    FileList = make_set(DeviceFileEvents.FileName, 100),
-    FileExtensionList = make_set(tostring(extract(@"\.([A-Za-z0-9_-]{1,}$)", 1, DeviceFileEvents.FileName)), 100)
-    by DeviceFileEvents.DeviceId, DeviceFileEvents.DeviceName, DeviceFileEvents.InitiatingProcessFileName, DeviceFileEvents.InitiatingProcessAccountName
-| where FileCount > 5
-| join (
-    DeviceProcessEvents
-    | where DeviceProcessEvents.Timestamp > ago(24h)
-    | where DeviceProcessEvents.ProcessCommandLine has_any(
-        "vssadmin delete shadows", "wmic shadowcopy delete", "bcdedit /set",
-        "wbadmin delete catalog", "wevtutil cl", "cipher /w:", "fsutil usn delete",
-        "icacls.exe \"/grant Everyone:F\"", "attrib.exe +H", "certutil.exe -decode", 
-        "taskkill.exe /im", "bootcfg.exe /raw", "powershell.exe -ep bypass", 
-        "vssadmin resize shadowstorage", "reg.exe add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
-    )
-) on DeviceId
+let lookback_days = 7;
+
+DeviceProcessEvents
+| where Timestamp > ago(lookback_days * 1d)
+| where InitiatingProcessCommandLine has_any(
+    "osascript -e", 
+    "curl", 
+    "wget", 
+    "nc ", 
+    "ncat ", 
+    "netcat",
+    "python -c", 
+    "perl -e", 
+    "ruby -e", 
+    "bash -c", 
+    "zsh -c",
+    "chmod +x", 
+    "launchctl load",
+    "sudo -s"
+)
+| where not(InitiatingProcessFolderPath has_any(
+    "/Applications/", 
+    "/System/Library/"
+))
 | project
-    DeviceProcessEvents.Timestamp,
-    DeviceFileEvents.DeviceName,
-    DeviceFileEvents.ActionType,
-    FileCount,
-    FileList,
-    FileExtensionList,
-    DeviceFileEvents.InitiatingProcessFileName,
-    DeviceProcessEvents.ProcessCommandLine,
-    DeviceFileEvents.InitiatingProcessAccountName,
-    ReportId=hash(strcat(DeviceFileEvents.DeviceName, DeviceFileEvents.InitiatingProcessFileName))
+    Timestamp,
+    DeviceName,
+    AccountName,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    MD5,
+    ReportId = hash_sha256(strcat(DeviceName, FileName, ProcessCommandLine, tostring(Timestamp)))

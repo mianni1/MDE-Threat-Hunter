@@ -10,38 +10,46 @@
 // Reset compromised account credentials, review and remove suspicious mail forwarding rules, lock suspicious IP addresses, and consider implementing additional cloud security controls.
 // END_DESCRIPTION
 
-// Detect suspicious cloud activity including data exfiltration and unusual access patterns
 CloudAppEvents
-| where CloudAppEvents.Timestamp > ago(24h)
-| where CloudAppEvents.ActionType in~ (
-    "FileDownloaded", "FileDownloadedByUnknownIPAddress", "MassDownload", "MailItemsAccessed",
-    "MailExport", "NonOrganic-Download-IP-Generic", "AdminLoginFromNewCountry", "MailForwardingRuleSet",
-    "MailRedirectionRuleSet", "AnonymousIPUsed", "NewUserAgentForUser"
+| where Timestamp > ago(1d)
+| where ActionType in~ (
+    "FileDownloaded", 
+    "FileDownloadedByUnknownIPAddress", 
+    "MassDownload", 
+    "MailItemsAccessed",
+    "MailExport", 
+    "NonOrganic-Download-IP-Generic", 
+    "AdminLoginFromNewCountry", 
+    "MailForwardingRuleSet",
+    "MailRedirectionRuleSet", 
+    "AnonymousIPUsed", 
+    "NewUserAgentForUser"
 )
-| extend ActivityParameters = todynamic(CloudAppEvents.RawEventData.ActivityParameters)
-| extend UserAgent = tostring(CloudAppEvents.RawEventData.UserAgent)
+| extend RawData = RawEventData
+| extend ActivityParameters = todynamic(RawData.ActivityParameters)
+| extend UserAgent = tostring(RawData.UserAgent)
 | extend DeviceOS = extractjson("$.OS", UserAgent, typeof(string))
 | extend Browser = extractjson("$.Browser", UserAgent, typeof(string))
-| extend IPAddress = tostring(CloudAppEvents.RawEventData.IPAddress)
-| extend Country = tostring(CloudAppEvents.RawEventData.Country)
-| extend City = tostring(CloudAppEvents.RawEventData.City)
-| extend IsAnonymousProxy = tostring(CloudAppEvents.RawEventData.IsAnonymousProxy)
-| extend IsNewIPAddress = tostring(CloudAppEvents.RawEventData.IsNewIPAddress)
+| extend IPAddress = tostring(RawData.IPAddress)
+| extend Country = tostring(RawData.Country)
+| extend City = tostring(RawData.City)
+| extend IsAnonymousProxy = tostring(RawData.IsAnonymousProxy)
+| extend IsNewIPAddress = tostring(RawData.IsNewIPAddress)
 | extend DownloadedFileCount = tostring(ActivityParameters.[1].Value)
 | extend RiskScore = case(
-    CloudAppEvents.ActionType has_any("MassDownload", "MailExport"), 80,
-    CloudAppEvents.ActionType has "AnonymousIPUsed" or IsAnonymousProxy == "true", 70,
-    CloudAppEvents.ActionType has "NewUserAgentForUser" and IsNewIPAddress == "true", 60,
-    CloudAppEvents.ActionType has "AdminLoginFromNewCountry", 75,
-    CloudAppEvents.ActionType has "MailForwardingRuleSet" or CloudAppEvents.ActionType has "MailRedirectionRuleSet", 85,
-    CloudAppEvents.ActionType has "FileDownloadedByUnknownIPAddress", 65,
+    ActionType has_any("MassDownload", "MailExport"), 80,
+    ActionType has "AnonymousIPUsed" or IsAnonymousProxy == "true", 70,
+    ActionType has "NewUserAgentForUser" and IsNewIPAddress == "true", 60,
+    ActionType has "AdminLoginFromNewCountry", 75,
+    ActionType has_any("MailForwardingRuleSet", "MailRedirectionRuleSet"), 85,
+    ActionType has "FileDownloadedByUnknownIPAddress", 65,
     50
 )
 | where RiskScore > 50
 | project
-    CloudAppEvents.Timestamp,
-    CloudAppEvents.ActionType,
-    CloudAppEvents.AccountDisplayName,
+    Timestamp,
+    ActionType,
+    AccountDisplayName,
     IPAddress,
     Country,
     City,
@@ -50,8 +58,8 @@ CloudAppEvents
     DeviceOS,
     Browser,
     RiskScore,
-    CloudAppEvents.Application,
-    CloudAppEvents.ActivityType,
-    CloudAppEvents.ObjectName,
+    Application,
+    ActivityType,
+    ObjectName,
     DownloadedFileCount,
-    ReportId=hash(strcat(CloudAppEvents.AccountDisplayName, IPAddress, CloudAppEvents.ActionType))
+    ReportId = hash_sha256(strcat(AccountDisplayName, IPAddress, ActionType, tostring(Timestamp)))

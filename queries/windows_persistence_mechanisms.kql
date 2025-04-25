@@ -35,4 +35,4 @@ union DeviceRegistryEvents, DeviceProcessEvents
 | project Timestamp, DeviceName, ActionType, RegistryKey, RegistryValueName, RegistryValueData, 
   ProcessId, FileName, FolderPath, InitiatingProcessFileName, InitiatingProcessCommandLine
 | extend AlertDetails = strcat("Potential persistence mechanism detected on device: ", DeviceName)
-| sort by Timestamp desc
+| sort by Timestamp desc;

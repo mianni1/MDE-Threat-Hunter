@@ -79,12 +79,14 @@ jobs:
         uses: actions/cache@v3
         with:
           path: |
-            ~/.local/share/powershell
-            /usr/bin/pwsh
-          key: ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-${{ github.run_id }}
+            ~/.local/share/powershell/Modules
+            # Explicitly exclude the pwsh binary symlink to prevent conflicts
+            !~/.local/share/powershell/*/pwsh
+            !~/.local/share/powershell/pwsh
+          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ github.run_id }}
           restore-keys: |
-            ${{ runner.os }}-pwsh-${{ hashFiles('**/*.psd1') }}-
-            ${{ runner.os }}-pwsh-
+            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-modules-
 
       # Install PowerShell only if not cached
       - name: Setup PowerShell
@@ -303,4 +305,8 @@ jobs:
             
             Date: $(date)
             Run ID: ${{ github.run_id }}
-            Lookback Period: ${{ github.event.inputs.lookback_days
+            Lookback Period: ${{ github.event.inputs.lookback_days || '7' }} days
+            Findings detected: ${{ steps.run_queries.outputs.has_findings == 'true' && 'Yes' || 'No' }}
+            ${{ steps.run_queries.outputs.has_findings == 'true' && format('Number of findings: {0}', steps.run_queries.outputs.total_findings) || 'No security issues detected in the last scan period.' }}
+            
+            Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

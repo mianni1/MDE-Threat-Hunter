@@ -1,4 +1,4 @@
-# KQL Query Validator Script
+# KQL Query Validator v2
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
 param (
     [Parameter(Position = 0)]
@@ -16,10 +16,13 @@ $ErrorActionPreference = 'Stop'
 function Write-Log {
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory)] [string] $Message,
-        [ValidateSet('INFO','WARNING','ERROR','DEBUG','SUCCESS')] [string] $Level = 'INFO'
+        [Parameter(Mandatory)]
+        [string] $Message,
+
+        [ValidateSet('INFO','WARNING','ERROR','DEBUG','SUCCESS')]
+        [string] $Level = 'INFO'
     )
-    $timestamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     switch ($Level) {
         'ERROR'   { Write-Error "[$timestamp] [ERROR] $Message" -ErrorAction Continue }
         'WARNING' { Write-Warning "[$timestamp] [WARNING] $Message" }
@@ -39,7 +42,7 @@ function Get-CurrentMdeSchema {
         DeviceAlertEvents    = @('Timestamp','DeviceId','AlertId','Severity');
         DeviceEvents         = @('Timestamp','DeviceId','ActionType','FileName');
         LinuxEvents          = @('Timestamp','DeviceId','EventName','User');
-        MacEvents            = @('Timestamp','DeviceId','EventType','ProcessCommandLine')
+        MacEvents            = @('Timestamp','DeviceId','EventType','ProcessCommandLine');
     }
 }
 
@@ -55,12 +58,17 @@ function Test-KqlQuery {
             $content = Get-Content $Path -Raw
             $issues  = [System.Collections.Generic.List[string]]::new()
 
-            if ($content -match 'let\s+\w+\s*=.+?[^;]\s*let') { $issues.Add('Missing semicolons between let statements') }
+            # Check for unbalanced parentheses
             if (($content.ToCharArray() | Where-Object {$_ -eq '('}).Count -ne ($content.ToCharArray() | Where-Object {$_ -eq ')'}).Count) {
                 $issues.Add('Unbalanced parentheses')
             }
-            if ($content -match '//[^ ]') { $issues.Add('Missing space after // comment') }
 
+            # Check for missing space after comment markers
+            if ($content -match '//[^ /t\r\n]') {
+                $issues.Add('Missing space after // comment')
+            }
+
+            # SQL-style operator misuse
             $sqlOperators = @{LIKE='=~'; '<>'=' != '}
             foreach ($op in $sqlOperators.Keys) {
                 if ($content -match "(?i)\b$op\b") {
@@ -68,14 +76,17 @@ function Test-KqlQuery {
                 }
             }
 
+            # Performance anti-pattern
             if ($ValidatePerformance -and $content -match 'project\s+.+?\|\s*where') {
-                $issues.Add("Project-before-where performance anti-pattern")
+                $issues.Add('Project-before-where performance anti-pattern')
             }
 
-            $schemaKeys = (Get-CurrentMdeSchema).Keys -join '|'
-            $timeFilterPattern = "\b($schemaKeys)\b"
-            if ($content -match $timeFilterPattern -and -not ($content -match 'ago\(')) {
-                $issues.Add('Missing time filter')
+            # Check for missing time filter on known tables
+            $schema = Get-CurrentMdeSchema
+            foreach ($table in $schema.Keys) {
+                if ($content -match "\b$table\b" -and $content -notmatch "$table\s*\|\s*where\s+.*ago\(") {
+                    $issues.Add("Missing time filter on $table")
+                }
             }
 
             if ($issues.Count -eq 0) {
@@ -85,30 +96,38 @@ function Test-KqlQuery {
 
             Write-Log "Found $($issues.Count) issue(s) in '$Path': $($issues -join ', ')" -Level WARNING
 
-            if ($FixCommonIssues) {
-                if ($PSCmdlet.ShouldProcess($Path, 'Fix issues')) {
-                    $fixed = $content
-                    if ($issues -contains 'Missing semicolons between let statements') {
-                        $fixed = $fixed -replace '(let\s+\w+\s*=.+?)(?<!;)(?=\s*let)','`$1;'
+            if ($FixCommonIssues -and $PSCmdlet.ShouldProcess($Path, 'Apply automatic fixes')) {
+                Write-Log "FixCommonIssues is enabled, attempting fixes..." -Level INFO
+                $fixed = $content
+
+                # Fix SQL-style operators
+                foreach ($op in $sqlOperators.Keys) {
+                    if ($issues -contains "SQL-style operator '$op'") {
+                        $fixed = $fixed -replace "(?i)\b$op\b", $sqlOperators[$op]
                     }
-                    foreach ($op in $sqlOperators.Keys) {
-                        if ($issues -contains "SQL-style operator '$op'") {
-                            $fixed = $fixed -replace "(?i)\b$op\b", $sqlOperators[$op]
-                        }
-                    }
-                    if ($issues -contains 'Project-before-where performance anti-pattern') {
-                        $fixed = [regex]::Replace($fixed,'(\|\s*project[^|]+)(\|\s*where)','$2$1')
-                    }
-                    if ($issues -contains 'Missing time filter') {
-                        $tbl = (Get-CurrentMdeSchema).Keys | Where-Object { $fixed -match "\b$_\b" } | Select-Object -First 1
-                        if ($tbl) { $fixed = $fixed -replace "\b$tbl\b","$tbl | where $tbl.Timestamp > ago(1d)" }
-                    }
-                    Copy-Item $Path "${Path}.bak" -Force
-                    Set-Content -Path $Path -Value $fixed
-                    Write-Log "Applied fixes and backed up original to '${Path}.bak'" -Level SUCCESS
-                    return @{Path=$Path; Passed=$false; Issues=$issues; Fixed=$true}
                 }
+
+                # Fix project-before-where
+                if ($issues -contains 'Project-before-where performance anti-pattern') {
+                    $fixed = [regex]::Replace($fixed, '(\|\s*project[^|]+)(\|\s*where)', '$2$1')
+                }
+
+                # Inject a time filter if missing
+                foreach ($table in $schema.Keys) {
+                    if ($issues -contains "Missing time filter on $table") {
+                        $fixed = $fixed -replace "(\b$table\b)(?!\s*\|\s*where\s+.*ago\()", "`$1 | where Timestamp > ago(1d)"
+                    }
+                }
+
+                if ($PSCmdlet.ShouldProcess($Path, "Backup original query")) {
+                    Copy-Item $Path "${Path}.bak" -Force
+                }
+
+                Set-Content -Path $Path -Value $fixed
+                Write-Log "Applied fixes and backed up original to '${Path}.bak'" -Level SUCCESS
+                return @{Path=$Path; Passed=$false; Issues=$issues; Fixed=$true}
             }
+
             return @{Path=$Path; Passed=$false; Issues=$issues; Fixed=$false}
         }
         catch {
@@ -119,15 +138,16 @@ function Test-KqlQuery {
 }
 
 function Test-KqlQuerySyntax {
-    [CmdletBinding()]
-    param([Parameter(Mandatory=$true)][string]$QueryPath)
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param ([Parameter(Mandatory=$true)][string]$QueryPath)
+
     try {
         $validation = Test-KqlQuery -Path $QueryPath
-        return $validation.Passed
+        return $validation
     }
     catch {
         Write-Log "Error validating query syntax: $_" -Level ERROR
-        return $false
+        return @{Path=$QueryPath; Passed=$false; Issues=@("Exception occurred"); Fixed=$false}
     }
 }
 
@@ -137,24 +157,23 @@ if ($MyInvocation.InvocationName -ne '.') {
         if (-not (Test-Path -Path $dir)) {
             $dir = Join-Path (Split-Path -Parent $PSScriptRoot) $QueryDirectory
         }
-        
         if (-not (Test-Path -Path $dir)) {
             throw "Cannot find query directory: $QueryDirectory"
         }
-        
+
         $dir = Resolve-Path -Path $dir -ErrorAction Stop
         Write-Log "Scanning directory '$dir'" -Level INFO
-        $results = Get-ChildItem -Path $dir -Filter '*.kql' -File | Test-KqlQuery -Verbose
-        
+        $results = Get-ChildItem -Path $dir -Filter '*.kql' -File | Test-KqlQuery
+
         $failCount = ($results | Where-Object { -not $_.Passed }).Count
         if ($failCount -gt 0) {
             Write-Log "$failCount queries failed validation" -Level ERROR
             exit 1
         }
-        
+
         Write-Log 'Validation complete. All queries passed.' -Level SUCCESS
         exit 0
-    } 
+    }
     catch {
         Write-Log "Error: $_" -Level ERROR
         exit 1

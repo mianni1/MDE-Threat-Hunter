@@ -1,36 +1,45 @@
 // DESCRIPTION:
-// Detection of privilege escalation through identity management changes, focusing on additions to administrative groups.
-// TECHNICAL:
-// This alert identifies user account operations that may indicate privilege escalation, including new account creation and additions to sensitive security groups like Domain Admins, Enterprise Admins, and local Administrators groups.
+// Detects creation of new user accounts or their addition to high-privilege groups such as Domain Admins, Enterprise Admins, or Local Administrators.
 // MITRE_ATTACK:
 // T1078 (Valid Accounts), T1098 (Account Manipulation), T1136 (Create Account)
 // IMPACT:
-// Attackers may be establishing persistence or elevating privileges by creating new accounts or adding compromised accounts to administrative groups.
+// Adversaries may gain persistence or elevate privileges by altering user group memberships.
 // REMEDIATION:
-// Verify the legitimacy of the account changes, review the authorisation for such changes, remove unauthorised privileges, and monitor the affected accounts for suspicious activity.
+// Validate whether these changes were authorised. Roll back any unauthorised changes and review associated user activity.
 // END_DESCRIPTION
 
+let time_range = ago(7d);
+
 DeviceEvents
-| where DeviceEvents.Timestamp > ago(24h)
-| where DeviceEvents.ActionType in ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")
-| extend ParsedFields = parse_json(DeviceEvents.AdditionalFields)
+| where Timestamp >= time_range
+| where ActionType in~ ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")
+| extend ParsedFields = iff(isnotempty(AdditionalFields), parse_json(AdditionalFields), dynamic({}))
 | extend GroupName = tostring(ParsedFields.GroupName)
 | extend GroupSid = tostring(ParsedFields.GroupSid)
 | extend SubjectUserSid = tostring(ParsedFields.SubjectUserSid)
 | extend SubjectUserName = tostring(ParsedFields.SubjectUserName)
 | extend TargetUserName = tostring(ParsedFields.TargetUserName)
 | extend TargetUserSid = tostring(ParsedFields.TargetUserSid)
+| extend NormalisedGroup = tolower(GroupName)
 | where 
-    GroupName has_any("Admin", "administrator", "Domain Admins", "Enterprise Admins", "Schema Admins", "Account Operators", "Backup Operators") or
-    GroupSid == "S-1-5-32-544" // Local Administrators
+    NormalisedGroup has_any (
+        "admin", 
+        "administrator", 
+        "domain admins", 
+        "enterprise admins", 
+        "schema admins", 
+        "account operators", 
+        "backup operators"
+    )
+    or GroupSid == "S-1-5-32-544"
 | project
-    DeviceEvents.Timestamp,
-    DeviceEvents.DeviceName,
-    DeviceEvents.ActionType,
+    Timestamp,
+    DeviceName,
+    ActionType,
     TargetUserName,
     TargetUserSid,
     GroupName,
     GroupSid,
     SubjectUserName,
     SubjectUserSid,
-    ReportId=hash(strcat(DeviceEvents.DeviceName, TargetUserName, DeviceEvents.ActionType, GroupName))
+    ReportId = hash_sha256(strcat(DeviceName, TargetUserSid, ActionType, GroupSid, tostring(Timestamp)))

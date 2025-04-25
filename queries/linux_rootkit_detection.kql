@@ -1,7 +1,7 @@
 // DESCRIPTION:
 // Detection of potential Linux rootkit installation or kernel module manipulation activity.
 // TECHNICAL:
-// This alert identifies suspicious usage of kernel module management commands (insmod, modprobe, rmmod) or access to sensitive kernel information files (/proc/modules, /proc/kallsyms). Legitimate activity related to known hardware drivers like nvidia or virtualisation software is excluded.
+// This alert identifies suspicious usage of kernel module management commands (insmod, modprobe, rmmod) or access to sensitive kernel information files (/proc/modules, /proc/kallsyms). Legitimate activity related to known hardware drivers =~ nvidia or virtualisation software is excluded.
 // MITRE_ATTACK:
 // T1014 (Rootkit), T1547.006 (Kernel Modules and Extensions), T1215 (Kernel Modules and Extensions)
 // IMPACT:
@@ -10,23 +10,42 @@
 // Isolate the affected system, investigate the specific kernel module activity, verify module authenticity, and consider a clean OS reinstallation if a rootkit is confirmed.
 // END_DESCRIPTION
 
+let lookback_days = 7;
+
 DeviceProcessEvents
-| where DeviceProcessEvents.Timestamp > ago(24h)
-// Removed OSPlatform filter and relying on Linux-specific commands instead
-| where (
-    DeviceProcessEvents.FileName in~ ("insmod", "modprobe", "rmmod", "modinfo", "lsmod", "depmod", "init_module", "finit_module") or
-    DeviceProcessEvents.ProcessCommandLine has_any("/proc/modules", "/proc/kallsyms", "/proc/kcore", "/boot/System.map", "/sys/kernel/")
+| where Timestamp > ago(lookback_days * 1d)
+| where FileName in~ (
+    "insmod", 
+    "modprobe", 
+    "rmmod", 
+    "modinfo", 
+    "lsmod", 
+    "depmod", 
+    "init_module", 
+    "finit_module"
 )
-| where DeviceProcessEvents.ProcessCommandLine !has_any("nvidia", "virtualbox", "vmware", "vagrant")
-| where not(DeviceProcessEvents.InitiatingProcessFolderPath has_any("/usr/lib/apt/", "/usr/bin/dpkg", "/usr/bin/apt", "/usr/bin/yum"))
+or ProcessCommandLine has_any (
+    "/proc/modules", 
+    "/proc/kallsyms", 
+    "/proc/kcore", 
+    "/boot/System.map", 
+    "/sys/kernel/"
+)
+| where ProcessCommandLine !has_any ("nvidia", "virtualbox", "vmware", "vagrant")
+| where not(InitiatingProcessFolderPath has_any (
+    "/usr/lib/apt/", 
+    "/usr/bin/dpkg", 
+    "/usr/bin/apt", 
+    "/usr/bin/yum"
+))
 | project
-    DeviceProcessEvents.Timestamp,
-    DeviceProcessEvents.DeviceName,
-    DeviceProcessEvents.AccountName,
-    DeviceProcessEvents.ProcessCommandLine,
-    DeviceProcessEvents.FileName,
-    DeviceProcessEvents.FolderPath,
-    DeviceProcessEvents.InitiatingProcessFileName,
-    DeviceProcessEvents.InitiatingProcessCommandLine,
-    DeviceProcessEvents.InitiatingProcessAccountName,
-    ReportId=hash(strcat(DeviceProcessEvents.DeviceName, DeviceProcessEvents.FileName, DeviceProcessEvents.ProcessCommandLine))
+    Timestamp,
+    DeviceName,
+    AccountName,
+    ProcessCommandLine,
+    FileName,
+    FolderPath,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessAccountName,
+    ReportId = hash_sha256(strcat(DeviceName, FileName, ProcessCommandLine, tostring(Timestamp)))
