@@ -706,7 +706,8 @@ function New-SecurityAlertReport {
             version = "2.1.0"
             runs = @(
                 @{
-                    runAutomationDetails = @{
+                    # Renamed runAutomationDetails to automationDetails
+                    automationDetails = @{
                         id = "security-scan/$Category/$(Get-Date -Format 'yyyyMMdd')"
                         guid = [Guid]::NewGuid().ToString()
                         correlationGuid = [Guid]::NewGuid().ToString()
@@ -717,8 +718,8 @@ function New-SecurityAlertReport {
                             version = "1.0"
                             informationUri = "https://github.com/security"
                             semanticVersion = "1.0.0"
-                            downloadUri = $null
-                            organisation = "Security"
+                            # Renamed organisation to organization
+                            organization = "Security"
                             supportedTaxonomies = @(
                                 @{
                                     name = "Security"
