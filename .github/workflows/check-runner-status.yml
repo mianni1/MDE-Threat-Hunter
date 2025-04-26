@@ -1,5 +1,5 @@
-name: Runner Status
-run-name: Runner Check - AR1 & AR2 (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Push' }})
+name: Runner Status Check
+run-name: "Runner Health Check: ${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Push' }} Run"
 
 on:
   push:
