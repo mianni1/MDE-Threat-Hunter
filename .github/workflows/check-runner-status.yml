@@ -20,11 +20,7 @@ jobs:
       matrix:
         runner: [AR1, AR2]
       fail-fast: false
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-      - ${{ matrix.runner }}
+    runs-on: [self-hosted, Linux, X64, ${{ matrix.runner }}]
     timeout-minutes: 5
 
     steps:

@@ -62,10 +62,10 @@ jobs:
           # Apply ulimit directly
           ulimit -Sv ${{ env.VIRTUAL_MEM_LIMIT }}
           
-          # Set environment variables for all subsequent steps
-          echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+          # Set environment variables for all subsequent steps - fix for GitHub Actions syntax
+          echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
+          echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
       
       # Comprehensive environment setup with integrated disk cleanup
       - name: Setup environment
@@ -123,7 +123,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
             ${{ runner.os }}-pwsh-modules-
-      
+        continue-on-error: true
+
       # 3. Short-term cache for temporary query results
       - name: Cache query results
         id: cache-query-results
@@ -135,6 +136,7 @@ jobs:
           key: ${{ runner.os }}-query-results-${{ github.run_id }}
           restore-keys: |
             ${{ runner.os }}-query-results-
+        continue-on-error: true
 
       # Check PowerShell and install/update if needed
       - name: Check PowerShell
@@ -274,11 +276,11 @@ jobs:
     name: Hunt - ${{ matrix.group_name }}
     needs: prepare-environment
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 15
+    timeout-minutes: 30 # Increased timeout for larger queries
     strategy:
       matrix: ${{ fromJson(needs.prepare-environment.outputs.matrix || '{"include":[]}') }}
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 3 # Reduced parallel jobs to avoid resource contention
     
     steps:
       - name: Checkout repository
@@ -364,7 +366,37 @@ jobs:
 
             # Execute query and save results
             $outputPath = Join-Path $groupResultDir ($queryName -replace '\.kql', '.csv')
-            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -UseCredentials -TenantId $env:MDE_TENANT_ID -ClientId $env:MDE_CLIENT_ID -ClientSecret $env:MDE_CLIENT_SECRET
+            try {
+                $retryCount = 0
+                $maxRetries = 3
+                $success = $false
+
+                while (-not $success -and $retryCount -lt $maxRetries) {
+                    try {
+                        Write-Host "Executing $queryName (attempt $(($retryCount + 1)))"
+                        
+                        # Stagger API calls to prevent rate limiting
+                        if ($retryCount -gt 0) {
+                            $delay = [math]::Pow(2, $retryCount) * 5 # Exponential backoff
+                            Write-Host "Waiting $delay seconds before retry..."
+                            Start-Sleep -Seconds $delay
+                        }
+                        
+                        ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -UseCredentials -TenantId $env:MDE_TENANT_ID -ClientId $env:MDE_CLIENT_ID -ClientSecret $env:MDE_CLIENT_SECRET
+                        $success = $true
+                    } catch {
+                        $retryCount++
+                        if ($retryCount -ge $maxRetries) {
+                            Write-Host "Failed to execute query after $maxRetries attempts: $_"
+                            throw
+                        }
+                        Write-Host "Query execution failed: $_ - Retrying..."
+                    }
+                }
+            } catch {
+                Write-Host "Error executing query $queryName: $_"
+                continue
+            }
             
             # Process results
             $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue

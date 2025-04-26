@@ -142,7 +142,7 @@ function Get-AuthToken {
     )
     
     try {
-        Write-Log "Authenticating with Microsoft Graph API" -Level INFO
+        Write-Log "Authenticating with Microsoft Defender for Endpoint API" -Level INFO
         
         if($ClientSecret) {
             # Service principal auth
@@ -150,7 +150,7 @@ function Get-AuthToken {
                 grant_type    = "client_credentials"
                 client_id     = $ClientId
                 client_secret = $ClientSecret
-                scope         = "https://api.securitycenter.microsoft.com/.default"
+                scope         = "https://api.security.microsoft.com/.default"
             }
             
             $authResponse = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body $authBody -ContentType "application/x-www-form-urlencoded"
@@ -169,14 +169,14 @@ function Get-AuthToken {
                 Import-Module Microsoft.Graph.Security -ErrorAction Stop
             }
             
-            Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -Scopes "https://api.securitycenter.microsoft.com/.default" -ErrorAction Stop
+            Connect-MgGraph -TenantId $TenantId -ClientId $ClientId -Scopes "https://api.security.microsoft.com/.default" -ErrorAction Stop
             
             $context = Get-MgContext
             if(-not $context) {
                 throw "Failed to authenticate. No context available."
             }
             
-            Write-Log "Successfully authenticated with Microsoft Graph" -Level INFO
+            Write-Log "Successfully authenticated with Microsoft Defender for Endpoint API" -Level INFO
             return $context.AccessToken
         }
     }
