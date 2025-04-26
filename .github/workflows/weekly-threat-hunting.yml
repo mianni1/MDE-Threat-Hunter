@@ -57,7 +57,8 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+          # NODE_OPTIONS must be set directly in each step that needs it
+          # Do not use GITHUB_ENV for NODE_OPTIONS
 
       - name: Setup environment and cleanup
         id: env_setup
@@ -134,6 +135,7 @@ jobs:
         shell: pwsh
         env:
           DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
         run: |
           & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
           if ($LASTEXITCODE -ne 0) {
@@ -159,6 +161,7 @@ jobs:
         shell: pwsh
         env:
           DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
         run: |
           $lookbackDays = '${{ github.event.inputs.lookback_days }}' 
           $lookbackDays = if ($lookbackDays -and $lookbackDays -ne '') { $lookbackDays } else { '7' }
@@ -289,6 +292,7 @@ jobs:
         shell: pwsh
         env:
           DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
         run: |
           $sarifFile = "results/weekly-hunting/weekly-security-findings.sarif"
           
