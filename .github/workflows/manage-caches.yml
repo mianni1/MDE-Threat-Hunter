@@ -92,7 +92,7 @@ jobs:
                 }
               }
             } catch {
-              Write-Host "Error checking module $moduleName: $_"
+              Write-Host "Error checking module $($moduleName): $_"
             }
           }
           
