@@ -57,7 +57,7 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+          # NODE_OPTIONS must be set directly in each step that needs it
 
       # Unified environment setup and disk cleanup
       - name: Setup environment
@@ -75,37 +75,20 @@ jobs:
           
           echo "disk_status=OK" >> $GITHUB_OUTPUT
 
-      # Use cache for PowerShell and modules
-      - name: Cache PowerShell environment
-        id: cache-pwsh-env
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.local/share/powershell/Modules
-            # Explicitly exclude the pwsh binary symlink to prevent conflicts
-            !~/.local/share/powershell/*/pwsh
-            !~/.local/share/powershell/pwsh
-          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-daily
-          restore-keys: |
-            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
-            ${{ runner.os }}-pwsh-modules-
-
-      # Install PowerShell only if not cached
-      - name: Setup PowerShell
-        if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
-        shell: bash
+      # Setup PowerShell environment directly without caching
+      - name: Setup PowerShell environment
+        id: setup_pwsh
+        shell: pwsh
+        env:
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
         run: |
-          if ! command -v pwsh &> /dev/null; then
-            echo "Installing PowerShell..."
-            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
-            sudo dpkg -i packages-microsoft-prod.deb
-            sudo apt-get update -qq
-            sudo apt-get install -y powershell
-            rm packages-microsoft-prod.deb
-          fi
+          # Setup PowerShell environment using centralized script
+          & "./scripts/setup-powershell-env.ps1" -Verbose
           
-          # Install required PowerShell modules
-          pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; if (-not (Get-Module -ListAvailable Microsoft.Graph.Security)) { Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser }"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Failed to setup PowerShell environment"
+            exit 1
+          }
 
       # Validate KQL queries
       - name: Validate queries

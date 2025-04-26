@@ -68,45 +68,13 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+          # NODE_OPTIONS must be set directly in each step that needs it
       
       # Create required directories
       - name: Setup directories
         shell: bash
         run: |
           mkdir -p results .github/security logs
-      
-      # Advanced multi-layer caching strategy
-      # 1. Long-term cache for PowerShell binaries
-      - name: Cache PowerShell binaries
-        id: cache-pwsh-bin
-        uses: actions/cache@v3
-        with:
-          path: /usr/bin/pwsh
-          key: ${{ runner.os }}-pwsh-bin-${{ env.CACHE_KEY_DATE }}
-      
-      # 2. Medium-term cache for PowerShell modules
-      - name: Cache PowerShell modules
-        id: cache-pwsh-modules
-        uses: actions/cache@v3
-        with:
-          path: ~/.local/share/powershell/Modules
-          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
-          restore-keys: |
-            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
-            ${{ runner.os }}-pwsh-modules-
-      
-      # 3. Short-term cache for query results
-      - name: Cache query results
-        id: cache-query-results
-        uses: actions/cache@v3
-        with:
-          path: |
-            results
-            .github/security
-          key: ${{ runner.os }}-query-results-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-query-results-
       
       # Check disk space and cleanup if needed
       - name: Manage disk space
@@ -120,86 +88,25 @@ jobs:
           find /tmp -type f -mtime +1 -delete 2>/dev/null || true
           echo "disk_status=OK" >> $GITHUB_OUTPUT
 
-      # Check PowerShell and install/update if needed
-      - name: Setup PowerShell
-        id: pwsh_setup
-        shell: bash
-        run: |
-          # Check if PowerShell is installed or properly cached
-          if [ "${{ steps.cache-pwsh-bin.outputs.cache-hit }}" == "true" ] && command -v pwsh &> /dev/null; then
-            PWSH_VERSION=$(pwsh --version | awk '{print $2}')
-            echo "PowerShell found in cache (v$PWSH_VERSION)"
-            echo "version=$PWSH_VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Installing PowerShell..."
-            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
-            sudo dpkg -i packages-microsoft-prod.deb
-            sudo apt-get update -qq
-            sudo apt-get install -y powershell
-            rm packages-microsoft-prod.deb
-            
-            PWSH_VERSION=$(pwsh --version | awk '{print $2}')
-            echo "PowerShell installed (v$PWSH_VERSION)"
-            echo "version=$PWSH_VERSION" >> $GITHUB_OUTPUT
-          fi
-      
-      # Check and update PowerShell modules
-      - name: Manage PowerShell modules
+      # Setup PowerShell environment directly without problematic caching
+      - name: Setup PowerShell environment
+        id: setup_pwsh
         shell: pwsh
         env:
-          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
         run: |
-          # Configure PSGallery
-          if (-not (Get-PSRepository -Name PSGallery).InstallationPolicy -eq 'Trusted') {
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          # Setup PowerShell environment using centralized script
+          & "./scripts/setup-powershell-env.ps1" -Verbose
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Failed to setup PowerShell environment"
+            exit 1
           }
           
-          # Define required modules with version checking
-          $requiredModules = @(
-            @{ Name = "Microsoft.Graph.Security"; MinVersion = "2.0.0" },
-            @{ Name = "PSWriteHTML"; MinVersion = "0.0.180" },
-            @{ Name = "ImportExcel"; MinVersion = "7.4.0" }
-          )
-          
-          foreach ($module in $requiredModules) {
-            $existingModule = Get-Module -ListAvailable -Name $module.Name | 
-              Sort-Object Version -Descending | Select-Object -First 1
-            
-            if ($existingModule) {
-              $currentVersion = $existingModule.Version
-              Write-Host "$($module.Name) module found (v$currentVersion)"
-              
-              # Check if update is needed
-              try {
-                $latestModule = Find-Module -Name $module.Name -ErrorAction Stop
-                $latestVersion = $latestModule.Version
-                
-                if ($latestVersion -gt $currentVersion) {
-                  Write-Host "Updating $($module.Name) from v$currentVersion to v$latestVersion"
-                  Update-Module -Name $module.Name -Force
-                  Write-Host "$($module.Name) module updated to v$latestVersion"
-                } else {
-                  Write-Host "$($module.Name) module v$currentVersion is current (latest: v$latestVersion)"
-                }
-              } catch {
-                Write-Host "Warning: Could not check for $($module.Name) updates: $_"
-              }
-            } else {
-              # Module not found, install it
-              Write-Host "Installing $($module.Name) module..."
-              Install-Module -Name $module.Name -Force -Scope CurrentUser
-              $installedVersion = (Get-Module -ListAvailable -Name $module.Name | 
-                Sort-Object Version -Descending | Select-Object -First 1).Version
-              Write-Host "$($module.Name) module installed (v$installedVersion)"
-            }
-          }
-          
-          # Module cache statistics
-          $modulePath = "$HOME/.local/share/powershell/Modules"
-          if (Test-Path $modulePath) {
-            $size = (Get-ChildItem $modulePath -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-            Write-Host "PowerShell module cache size: $([Math]::Round($size, 2)) MB"
-          }
+          # Report PowerShell version for diagnostics
+          $version = $PSVersionTable.PSVersion.ToString()
+          Write-Host "PowerShell Version: $version"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
       
       # Load API credentials
       - name: Load credentials

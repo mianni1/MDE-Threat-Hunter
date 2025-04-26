@@ -112,22 +112,20 @@ jobs:
             ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
             ${{ runner.os }}-pwsh-modules-
 
-      # Install PowerShell only if not cached
-      - name: Setup PowerShell
-        if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
-        shell: bash
+      # Use standardized cache keys for PowerShell modules
+      - name: Setup PowerShell environment
+        id: setup_pwsh
+        shell: pwsh
+        env:
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
         run: |
-          if ! command -v pwsh &> /dev/null; then
-            echo "Installing PowerShell..."
-            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
-            sudo dpkg -i packages-microsoft-prod.deb
-            sudo apt-get update -qq
-            sudo apt-get install -y powershell
-            rm packages-microsoft-prod.deb
-          fi
+          # Setup PowerShell environment using centralized script
+          & "./scripts/setup-powershell-env.ps1" -Verbose
           
-          # Install required PowerShell modules
-          pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; if (-not (Get-Module -ListAvailable Microsoft.Graph.Security)) { Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser }"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Failed to setup PowerShell environment"
+            exit 1
+          }
 
       # Validate KQL queries 
       - name: Validate queries

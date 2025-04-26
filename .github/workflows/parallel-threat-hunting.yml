@@ -65,7 +65,7 @@ jobs:
           # Set environment variables for all subsequent steps - fix for GitHub Actions syntax
           echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
+          # Do not use GITHUB_ENV for NODE_OPTIONS
       
       # Comprehensive environment setup with integrated disk cleanup
       - name: Setup environment
@@ -104,41 +104,27 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
           DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
       
-      # Advanced multi-layer caching
-      # 1. Long-term stable cache for PowerShell binaries
-      - name: Cache PowerShell binaries
-        id: cache-pwsh-bin
-        uses: actions/cache@v3
-        with:
-          path: /usr/bin/pwsh
-          key: ${{ runner.os }}-pwsh-bin-${{ env.CACHE_KEY_DATE }}
+      # Setup PowerShell environment directly without caching
+      - name: Setup PowerShell environment
+        id: setup_pwsh
+        shell: pwsh
+        env:
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
+        run: |
+          # Setup PowerShell environment using centralized script
+          & "./scripts/setup-powershell-env.ps1" -Verbose
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Failed to setup PowerShell environment"
+            exit 1
+          }
+          
+          # Report PowerShell version for diagnostics
+          $version = $PSVersionTable.PSVersion.ToString()
+          Write-Host "PowerShell Version: $version"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
       
-      # 2. Medium-term cache for PowerShell modules
-      - name: Cache PowerShell modules
-        id: cache-pwsh-modules
-        uses: actions/cache@v3
-        with:
-          path: ~/.local/share/powershell/Modules
-          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
-          restore-keys: |
-            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
-            ${{ runner.os }}-pwsh-modules-
-        continue-on-error: true
-
-      # 3. Short-term cache for temporary query results
-      - name: Cache query results
-        id: cache-query-results
-        uses: actions/cache@v3
-        with:
-          path: |
-            results/parallel-hunting
-            .github/security
-          key: ${{ runner.os }}-query-results-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-query-results-
-        continue-on-error: true
-
-      # Check PowerShell and install/update if needed
+      # Check PowerShell and report status (no cache operations)
       - name: Check PowerShell
         id: pwsh_check
         shell: bash
@@ -289,15 +275,20 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
       
-      # Use shared cache for PowerShell modules (initialized in prepare-environment)
-      - name: Cache PowerShell modules
-        uses: actions/cache@v3
-        with:
-          path: ~/.local/share/powershell/Modules
-          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
-          restore-keys: |
-            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
-            ${{ runner.os }}-pwsh-modules-
+      # Setup PowerShell environment directly without problematic caching
+      - name: Setup PowerShell environment
+        id: setup_pwsh
+        shell: pwsh
+        env:
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
+        run: |
+          # Setup PowerShell environment using centralized script
+          & "./scripts/setup-powershell-env.ps1"
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Failed to setup PowerShell environment"
+            exit 1
+          }
       
       # Create result directory
       - name: Prepare result directory
@@ -476,6 +467,22 @@ jobs:
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
           DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
+          NODE_MEMORY_LIMIT: op://Security Automation/Runner Memory Config/NODE_MEMORY_LIMIT
+      
+      # Setup PowerShell environment directly without problematic caching
+      - name: Setup PowerShell environment
+        id: setup_pwsh
+        shell: pwsh
+        env:
+          NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
+        run: |
+          # Setup PowerShell environment using centralized script
+          & "./scripts/setup-powershell-env.ps1"
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Failed to setup PowerShell environment"
+            exit 1
+          }
       
       # Create output directories
       - name: Create output directories
