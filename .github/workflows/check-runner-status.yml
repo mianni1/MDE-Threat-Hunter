@@ -1,5 +1,5 @@
 name: Runner Status
-run-name: Runner Check (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Push' }})
+run-name: Runner Check - AR1 & AR2 (${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Push' }})
 
 on:
   push:
@@ -15,8 +15,12 @@ permissions:
 jobs:
   check-runner-health:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
-    name: Check Health
-    runs-on: [self-hosted, Linux, X64]
+    name: Check ${{ matrix.runner }} Health
+    strategy:
+      matrix:
+        runner: [AR1, AR2]
+      fail-fast: false
+    runs-on: [self-hosted, Linux, X64, ${{ matrix.runner }}]
     timeout-minutes: 5
 
     steps:
@@ -36,9 +40,10 @@ jobs:
             # Explicitly exclude the pwsh binary symlink to prevent conflicts
             !~/.local/share/powershell/*/pwsh
             !~/.local/share/powershell/pwsh
-          key: ${{ runner.os }}-pwsh-modules-health-${{ hashFiles('**/*.psd1') }}
+          key: ${{ runner.os }}-${{ matrix.runner }}-pwsh-modules-health-${{ hashFiles('**/*.psd1') }}
           restore-keys: |
-            ${{ runner.os }}-pwsh-modules-health-
+            ${{ runner.os }}-${{ matrix.runner }}-pwsh-modules-health-
+            ${{ runner.os }}-${{ matrix.runner }}-pwsh-modules-
             ${{ runner.os }}-pwsh-modules-
 
       # Install PowerShell only if not cached
@@ -60,22 +65,69 @@ jobs:
           fi
       
       # Load 1Password secrets
-      - name: Load secrets
+      - name: Load memory management configuration 
         uses: 1password/load-secrets-action@v1
         with:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
-          DOTNET_HEAP_LIMIT: op://Security Automation/DOTNET_HEAP_LIMIT/LIMIT
+          DOTNET_HEAP_LIMIT: op://Security Automation/Runner Memory Config/DOTNET_HEAP_LIMIT
+          COMPLUS_HEAP_LIMIT: op://Security Automation/Runner Memory Config/COMPLUS_HEAP_LIMIT
+          NODE_MEMORY_LIMIT: op://Security Automation/Runner Memory Config/NODE_MEMORY_LIMIT
+          VIRTUAL_MEM_LIMIT: op://Security Automation/Runner Memory Config/VIRTUAL_MEM_LIMIT
       
-      # Simplified health check
+      # Apply memory limits directly in the workflow
+      - name: Configure memory limits
+        shell: bash
+        run: |
+          # Apply ulimit directly
+          ulimit -Sv ${{ env.VIRTUAL_MEM_LIMIT }}
+          
+          # Set environment variables for all subsequent steps
+          echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
+          echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+      
+      # Enhanced health check - Runner specific
       - name: Check runner health
         id: health_check
         shell: bash
         run: |
-          # Simplified health check: mask detailed metrics
-          echo "health_status=OK" >> $GITHUB_OUTPUT
-          echo "overall_status=healthy" >> $GITHUB_OUTPUT
+          # Identify the runner
+          RUNNER_NAME="${{ matrix.runner }}"
+          echo "Running health check on $RUNNER_NAME runner"
+          
+          # Check disk space
+          DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+          echo "disk_usage=$DISK_USAGE" >> $GITHUB_OUTPUT
+          
+          # Check memory 
+          FREE_MEM=$(free -m | awk 'NR==2{printf "%.1f", $4/1024}')
+          echo "free_memory_gb=$FREE_MEM" >> $GITHUB_OUTPUT
+          
+          # Check load average
+          LOAD=$(cat /proc/loadavg | awk '{print $1}')
+          echo "load_avg=$LOAD" >> $GITHUB_OUTPUT
+          
+          # Check internet connectivity
+          if curl -s --connect-timeout 5 https://www.microsoft.com > /dev/null; then
+            echo "connectivity_status=OK" >> $GITHUB_OUTPUT
+          else
+            echo "connectivity_status=FAIL" >> $GITHUB_OUTPUT
+            echo "connectivity_issues=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # Overall status determination
+          if [ "$DISK_USAGE" -gt "90" ]; then
+            echo "disk_status=CRITICAL" >> $GITHUB_OUTPUT
+            echo "overall_status=unhealthy" >> $GITHUB_OUTPUT
+          elif [ "$DISK_USAGE" -gt "80" ]; then
+            echo "disk_status=WARNING" >> $GITHUB_OUTPUT
+            echo "overall_status=degraded" >> $GITHUB_OUTPUT
+          else
+            echo "disk_status=OK" >> $GITHUB_OUTPUT
+            echo "overall_status=healthy" >> $GITHUB_OUTPUT
+          fi
       
       # Check PowerShell modules and PSGallery connectivity
       - name: Check PS modules
@@ -141,24 +193,95 @@ jobs:
         run: |
           REPORT_DIR="results/health-reports"
           mkdir -p $REPORT_DIR
+          RUNNER_NAME="${{ matrix.runner }}"
           
-          cat > $REPORT_DIR/runner_health_$(date +%Y%m%d).txt <<EOL
-          Runner Health Report - $(date)
+          cat > $REPORT_DIR/runner_health_${RUNNER_NAME}_$(date +%Y%m%d).txt <<EOL
+          Runner Health Report - $RUNNER_NAME - $(date)
           ===================================
           
-          Disk Usage: ${{ steps.health_check.outputs.disk_usage }}%
+          Status: ${{ steps.health_check.outputs.overall_status }}
+          Disk Usage: ${{ steps.health_check.outputs.disk_usage }}% (${{ steps.health_check.outputs.disk_status }})
+          Free Memory: ${{ steps.health_check.outputs.free_memory_gb }} GB
+          Load Average: ${{ steps.health_check.outputs.load_avg }}
+          Connectivity: ${{ steps.health_check.outputs.connectivity_status }}
           Connectivity Issues: ${{ steps.health_check.outputs.connectivity_issues || 'None' }}
           PowerShell Module Issues: ${{ steps.ps_modules.outputs.module_issues || 'None' }}
           
           This health check runs twice daily to ensure the runner environment 
           is properly configured for threat hunting workflows.
           EOL
+          
+          echo "Generated health report for $RUNNER_NAME runner"
       
       # Notify on failure
       - name: Alert on Failure
         if: ${{ failure() }}
         shell: bash
         run: |
-          echo "CRITICAL: Runner health check failed. This may affect threat hunting workflows."
+          echo "CRITICAL: Runner health check failed on ${{ matrix.runner }}. This may affect threat hunting workflows."
           echo "Please check the runner status and perform maintenance as needed."
           exit 1
+
+  # Consolidate reports from all runners
+  consolidate-reports:
+    name: Consolidate Health Reports
+    needs: check-runner-health
+    runs-on: [self-hosted, Linux, X64, AR1]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      - name: Create summary report
+        shell: bash
+        run: |
+          REPORT_DIR="results/health-reports"
+          mkdir -p $REPORT_DIR
+          DATE=$(date +%Y%m%d)
+          
+          # Create consolidated report
+          cat > $REPORT_DIR/consolidated_health_${DATE}.txt <<EOL
+          Consolidated Runner Health Report - $(date)
+          ==========================================
+          
+          This report combines the health status from all runners.
+          Individual runner reports are available in the same directory.
+          
+          Overall Status: ${{ needs.check-runner-health.result == 'success' && 'HEALTHY ✓' || 'ISSUES DETECTED ⚠️' }}
+          
+          Run ID: ${{ github.run_id }}
+          Report Date: $(date)
+          
+          View detailed job results at: 
+          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOL
+          
+          echo "## Runner Status Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **AR1 & AR2 Health Check Completed**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ needs.check-runner-health.result == 'success' && '✓ All Systems Operational' || '⚠️ Issues Detected' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Runner health checks help ensure threat hunting workflows run properly." >> $GITHUB_STEP_SUMMARY
+      
+      - name: Send report to 1Password
+        if: always()
+        uses: 1password/load-secrets-action@v1
+        with:
+          operation: "op item create"
+          export-env: false
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_WRITE }}
+          TITLE: "Runner Health Status - $(date +%Y-%m-%d)"
+          VAULT: "Security Automation"
+          CATEGORY: "Secure Note"
+          NOTESPLAIN: |
+            Runner health check completed
+            
+            Date: $(date)
+            Run ID: ${{ github.run_id }}
+            Status: ${{ needs.check-runner-health.result == 'success' && 'All systems operational' || 'Issues detected' }}
+            
+            Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
