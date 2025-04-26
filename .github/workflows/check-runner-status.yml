@@ -13,14 +13,10 @@ permissions:
   actions: read
 
 jobs:
-  check-runner-health:
+  check-runner-health-ar1:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
-    name: Check ${{ matrix.runner }} Health
-    strategy:
-      matrix:
-        runner: [AR1, AR2]
-      fail-fast: false
-    runs-on: [self-hosted, Linux, X64, ${{ matrix.runner }}]
+    name: Check AR1 Health
+    runs-on: [self-hosted, Linux, X64, AR1]
     timeout-minutes: 5
 
     steps:
@@ -40,11 +36,12 @@ jobs:
             # Explicitly exclude the pwsh binary symlink to prevent conflicts
             !~/.local/share/powershell/*/pwsh
             !~/.local/share/powershell/pwsh
-          key: ${{ runner.os }}-${{ matrix.runner }}-pwsh-modules-health-${{ hashFiles('**/*.psd1') }}
+          key: ${{ runner.os }}-AR1-pwsh-modules-health-${{ hashFiles('**/*.psd1') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.runner }}-pwsh-modules-health-
-            ${{ runner.os }}-${{ matrix.runner }}-pwsh-modules-
+            ${{ runner.os }}-AR1-pwsh-modules-health-
+            ${{ runner.os }}-AR1-pwsh-modules-
             ${{ runner.os }}-pwsh-modules-
+        continue-on-error: true
 
       # Install PowerShell only if not cached
       - name: Setup PowerShell
@@ -84,9 +81,9 @@ jobs:
           ulimit -Sv ${{ env.VIRTUAL_MEM_LIMIT }}
           
           # Set environment variables for all subsequent steps
-          echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+          echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
+          echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
       
       # Enhanced health check - Runner specific
       - name: Check runner health
@@ -94,7 +91,7 @@ jobs:
         shell: bash
         run: |
           # Identify the runner
-          RUNNER_NAME="${{ matrix.runner }}"
+          RUNNER_NAME="AR1"
           echo "Running health check on $RUNNER_NAME runner"
           
           # Check disk space
@@ -193,7 +190,7 @@ jobs:
         run: |
           REPORT_DIR="results/health-reports"
           mkdir -p $REPORT_DIR
-          RUNNER_NAME="${{ matrix.runner }}"
+          RUNNER_NAME="AR1"
           
           cat > $REPORT_DIR/runner_health_${RUNNER_NAME}_$(date +%Y%m%d).txt <<EOL
           Runner Health Report - $RUNNER_NAME - $(date)
@@ -218,14 +215,220 @@ jobs:
         if: ${{ failure() }}
         shell: bash
         run: |
-          echo "CRITICAL: Runner health check failed on ${{ matrix.runner }}. This may affect threat hunting workflows."
+          echo "CRITICAL: Runner health check failed on AR1. This may affect threat hunting workflows."
+          echo "Please check the runner status and perform maintenance as needed."
+          exit 1
+
+  check-runner-health-ar2:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
+    name: Check AR2 Health
+    runs-on: [self-hosted, Linux, X64, AR2]
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # Use cache for PowerShell environment
+      - name: Cache PowerShell environment
+        id: cache-pwsh-env
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.local/share/powershell/Modules
+            # Explicitly exclude the pwsh binary symlink to prevent conflicts
+            !~/.local/share/powershell/*/pwsh
+            !~/.local/share/powershell/pwsh
+          key: ${{ runner.os }}-AR2-pwsh-modules-health-${{ hashFiles('**/*.psd1') }}
+          restore-keys: |
+            ${{ runner.os }}-AR2-pwsh-modules-health-
+            ${{ runner.os }}-AR2-pwsh-modules-
+            ${{ runner.os }}-pwsh-modules-
+        continue-on-error: true
+
+      # Install PowerShell only if not cached
+      - name: Setup PowerShell
+        if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          if ! command -v pwsh &> /dev/null; then
+            echo "Installing PowerShell..."
+            wget -q https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb
+            sudo dpkg -i packages-microsoft-prod.deb
+            sudo apt-get update -qq
+            sudo apt-get install -y powershell
+            rm packages-microsoft-prod.deb
+            
+            # Install core modules
+            pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted"
+            pwsh -Command "Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser"
+          fi
+      
+      # Load 1Password secrets
+      - name: Load memory management configuration 
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          DOTNET_HEAP_LIMIT: op://Security Automation/Runner Memory Config/DOTNET_HEAP_LIMIT
+          COMPLUS_HEAP_LIMIT: op://Security Automation/Runner Memory Config/COMPLUS_HEAP_LIMIT
+          NODE_MEMORY_LIMIT: op://Security Automation/Runner Memory Config/NODE_MEMORY_LIMIT
+          VIRTUAL_MEM_LIMIT: op://Security Automation/Runner Memory Config/VIRTUAL_MEM_LIMIT
+      
+      # Apply memory limits directly in the workflow
+      - name: Configure memory limits
+        shell: bash
+        run: |
+          # Apply ulimit directly
+          ulimit -Sv ${{ env.VIRTUAL_MEM_LIMIT }}
+          
+          # Set environment variables for all subsequent steps
+          echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
+          echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
+      
+      # Enhanced health check - Runner specific
+      - name: Check runner health
+        id: health_check
+        shell: bash
+        run: |
+          # Identify the runner
+          RUNNER_NAME="AR2"
+          echo "Running health check on $RUNNER_NAME runner"
+          
+          # Check disk space
+          DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+          echo "disk_usage=$DISK_USAGE" >> $GITHUB_OUTPUT
+          
+          # Check memory 
+          FREE_MEM=$(free -m | awk 'NR==2{printf "%.1f", $4/1024}')
+          echo "free_memory_gb=$FREE_MEM" >> $GITHUB_OUTPUT
+          
+          # Check load average
+          LOAD=$(cat /proc/loadavg | awk '{print $1}')
+          echo "load_avg=$LOAD" >> $GITHUB_OUTPUT
+          
+          # Check internet connectivity
+          if curl -s --connect-timeout 5 https://www.microsoft.com > /dev/null; then
+            echo "connectivity_status=OK" >> $GITHUB_OUTPUT
+          else
+            echo "connectivity_status=FAIL" >> $GITHUB_OUTPUT
+            echo "connectivity_issues=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # Overall status determination
+          if [ "$DISK_USAGE" -gt "90" ]; then
+            echo "disk_status=CRITICAL" >> $GITHUB_OUTPUT
+            echo "overall_status=unhealthy" >> $GITHUB_OUTPUT
+          elif [ "$DISK_USAGE" -gt "80" ]; then
+            echo "disk_status=WARNING" >> $GITHUB_OUTPUT
+            echo "overall_status=degraded" >> $GITHUB_OUTPUT
+          else
+            echo "disk_status=OK" >> $GITHUB_OUTPUT
+            echo "overall_status=healthy" >> $GITHUB_OUTPUT
+          fi
+      
+      # Check PowerShell modules and PSGallery connectivity
+      - name: Check PS modules
+        id: ps_modules
+        shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
+        run: |
+          # Check Microsoft.Graph.Security module
+          $moduleIssues = $false
+          if (Get-Module -ListAvailable Microsoft.Graph.Security) {
+            $moduleVersion = (Get-Module -ListAvailable Microsoft.Graph.Security).Version | Select-Object -First 1
+            Write-Host "✓ Microsoft.Graph.Security module is installed (Version: $moduleVersion)"
+          }
+          else {
+            Write-Host "⚠️ Microsoft.Graph.Security module missing - installing..."
+            Install-Module -Name Microsoft.Graph.Security -Force -Scope CurrentUser -SkipPublisherCheck
+            $moduleIssues = $true
+          }
+          
+          # Check PSGallery connectivity
+          try {
+            $gallery = Find-Module -Name PowerShellGet -Repository PSGallery -ErrorAction Stop
+            Write-Host "✓ PowerShell Gallery connectivity is working"
+          }
+          catch {
+            Write-Host "✗ PowerShell Gallery connectivity failed: $_"
+            $moduleIssues = $true
+          }
+          
+          # Check cache size
+          $modulePath = "$HOME/.local/share/powershell/Modules"
+          if (Test-Path $modulePath) {
+            $size = (Get-ChildItem $modulePath -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+            Write-Host "PowerShell module cache size: $([Math]::Round($size, 2)) MB"
+            
+            if ($size -gt 500) {
+              Write-Host "⚠️ PowerShell module cache is large ($([Math]::Round($size, 2)) MB)"
+            }
+          }
+          
+          # Set output
+          if ($moduleIssues) {
+            echo "module_issues=true" >> $GITHUB_OUTPUT
+          }
+      
+      # Validate KQL queries
+      - name: Validate queries
+        shell: pwsh
+        env:
+          DOTNET_GCHeapHardLimit: ${{ env.DOTNET_HEAP_LIMIT }}
+        run: |
+          & "./scripts/validate-queries.ps1" -QueryDirectory "queries"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Query validation failed."
+            exit 1
+          }
+          Write-Host "All queries passed validation ✅"
+      
+      # Send health report
+      - name: Generate health report
+        shell: bash
+        run: |
+          REPORT_DIR="results/health-reports"
+          mkdir -p $REPORT_DIR
+          RUNNER_NAME="AR2"
+          
+          cat > $REPORT_DIR/runner_health_${RUNNER_NAME}_$(date +%Y%m%d).txt <<EOL
+          Runner Health Report - $RUNNER_NAME - $(date)
+          ===================================
+          
+          Status: ${{ steps.health_check.outputs.overall_status }}
+          Disk Usage: ${{ steps.health_check.outputs.disk_usage }}% (${{ steps.health_check.outputs.disk_status }})
+          Free Memory: ${{ steps.health_check.outputs.free_memory_gb }} GB
+          Load Average: ${{ steps.health_check.outputs.load_avg }}
+          Connectivity: ${{ steps.health_check.outputs.connectivity_status }}
+          Connectivity Issues: ${{ steps.health_check.outputs.connectivity_issues || 'None' }}
+          PowerShell Module Issues: ${{ steps.ps_modules.outputs.module_issues || 'None' }}
+          
+          This health check runs twice daily to ensure the runner environment 
+          is properly configured for threat hunting workflows.
+          EOL
+          
+          echo "Generated health report for $RUNNER_NAME runner"
+      
+      # Notify on failure
+      - name: Alert on Failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          echo "CRITICAL: Runner health check failed on AR2. This may affect threat hunting workflows."
           echo "Please check the runner status and perform maintenance as needed."
           exit 1
 
   # Consolidate reports from all runners
   consolidate-reports:
     name: Consolidate Health Reports
-    needs: check-runner-health
+    needs: [check-runner-health-ar1, check-runner-health-ar2]
     runs-on: [self-hosted, Linux, X64, AR1]
     steps:
       - name: Checkout repository
@@ -249,7 +452,7 @@ jobs:
           This report combines the health status from all runners.
           Individual runner reports are available in the same directory.
           
-          Overall Status: ${{ needs.check-runner-health.result == 'success' && 'HEALTHY ✓' || 'ISSUES DETECTED ⚠️' }}
+          Overall Status: ${{ (needs.check-runner-health-ar1.result == 'success' && needs.check-runner-health-ar2.result == 'success') && 'HEALTHY ✓' || 'ISSUES DETECTED ⚠️' }}
           
           Run ID: ${{ github.run_id }}
           Report Date: $(date)
@@ -262,7 +465,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ **AR1 & AR2 Health Check Completed**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Status: ${{ needs.check-runner-health.result == 'success' && '✓ All Systems Operational' || '⚠️ Issues Detected' }}" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ (needs.check-runner-health-ar1.result == 'success' && needs.check-runner-health-ar2.result == 'success') && '✓ All Systems Operational' || '⚠️ Issues Detected' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Runner health checks help ensure threat hunting workflows run properly." >> $GITHUB_STEP_SUMMARY
       
@@ -282,6 +485,6 @@ jobs:
             
             Date: $(date)
             Run ID: ${{ github.run_id }}
-            Status: ${{ needs.check-runner-health.result == 'success' && 'All systems operational' || 'Issues detected' }}
+            Status: ${{ (needs.check-runner-health-ar1.result == 'success' && needs.check-runner-health-ar2.result == 'success') && 'All systems operational' || 'Issues detected' }}
             
             Access the GitHub Action run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
