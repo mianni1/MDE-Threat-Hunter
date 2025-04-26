@@ -31,15 +31,13 @@ DeviceNetworkEvents
 | project
     Timestamp,
     DeviceName,
-    ProcessFileName = InitiatingProcessFileName,
-    ProcessCommandLine = InitiatingProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
     LocalIP,
     LocalPort,
     RemoteIP,
     RemotePort,
     RemoteUrl,
-    InitiatingProcessFileName,
-    InitiatingProcessCommandLine,
     ActionType,
     RiskScore,
     ReportId = hash_sha256(strcat(DeviceName, InitiatingProcessFileName, RemoteIP, tostring(Timestamp)))

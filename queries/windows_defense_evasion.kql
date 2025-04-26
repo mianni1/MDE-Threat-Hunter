@@ -10,10 +10,9 @@
 // Verify integrity of security tools, review disabled services, and investigate suspicious registry modifications.
 // END_DESCRIPTION
 
-let lookback_days = 7;
-
+// API-compatible version (replaced variable with direct time filter)
 DeviceProcessEvents
-| where Timestamp > ago(lookback_days * 1d)
+| where Timestamp > ago(7d)
 | where ProcessCommandLine has_any(
     "sc stop WinDefend",
     "sc config WinDefend start=disabled",

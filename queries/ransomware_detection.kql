@@ -10,10 +10,9 @@
 // Investigate the process execution context, isolate affected systems if malicious activity is confirmed, and review security policies for script execution.
 // END_DESCRIPTION
 
-let lookback_days = 7;
-
+// API-compatible version (replaced variable with direct time filter)
 DeviceProcessEvents
-| where Timestamp > ago(lookback_days * 1d)
+| where Timestamp > ago(7d)
 | where InitiatingProcessCommandLine has_any(
     "osascript -e", 
     "curl", 

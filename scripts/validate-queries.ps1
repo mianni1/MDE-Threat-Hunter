@@ -8,6 +8,7 @@ param (
     [switch] $StrictValidation,
     [switch] $ValidatePerformance,
     [switch] $FixCommonIssues,
+    [switch] $ValidateApiCompatibility = $true,
     
     [switch] $DebugParentheses
 )
@@ -36,15 +37,16 @@ function Write-Log {
 
 function Get-CurrentMdeSchema {
     return @{
-        DeviceLogonEvents    = @('Timestamp','DeviceId','ActionType','AccountName','InitiatingProcessFileName');
-        DeviceNetworkEvents  = @('Timestamp','DeviceId','RemoteIP','Protocol','InitiatingProcessSHA256');
-        DeviceProcessEvents  = @('Timestamp','DeviceId','FileName','ProcessId','ProcessCommandLine');
-        DeviceFileEvents     = @('Timestamp','DeviceId','ActionType','FileName','FileSize');
-        DeviceRegistryEvents = @('Timestamp','DeviceId','RegistryKey','RegistryValueData');
-        DeviceAlertEvents    = @('Timestamp','DeviceId','AlertId','Severity');
-        DeviceEvents         = @('Timestamp','DeviceId','ActionType','FileName');
-        LinuxEvents          = @('Timestamp','DeviceId','EventName','User');
-        MacEvents            = @('Timestamp','DeviceId','EventType','ProcessCommandLine');
+        DeviceLogonEvents    = @('Timestamp','DeviceId','DeviceName','ActionType','AccountName','AccountDomain','LogonType','InitiatingProcessFileName');
+        DeviceNetworkEvents  = @('Timestamp','DeviceId','DeviceName','LocalIP','RemoteIP','RemotePort','RemoteUrl','Protocol','InitiatingProcessFileName','InitiatingProcessSHA256');
+        DeviceProcessEvents  = @('Timestamp','DeviceId','DeviceName','FileName','ProcessId','ProcessCommandLine','InitiatingProcessFileName');
+        DeviceFileEvents     = @('Timestamp','DeviceId','DeviceName','ActionType','FileName','FolderPath','FileSize','InitiatingProcessFileName');
+        DeviceRegistryEvents = @('Timestamp','DeviceId','DeviceName','RegistryKey','RegistryValueData');
+        DeviceAlertEvents    = @('Timestamp','DeviceId','DeviceName','AlertId','Severity');
+        DeviceEvents         = @('Timestamp','DeviceId','DeviceName','ActionType','FileName');
+        LinuxEvents          = @('Timestamp','DeviceId','DeviceName','EventName','User');
+        MacEvents            = @('Timestamp','DeviceId','DeviceName','EventType','ProcessCommandLine');
+        DeviceFileCertificateInfo = @('Timestamp','DeviceId','DeviceName','FileName','FolderPath','SHA256','Signer','SignatureStatus');
     }
 }
 
@@ -119,6 +121,47 @@ function Test-KqlQuery {
                 }
             }
 
+            # API Compatibility checks
+            if ($ValidateApiCompatibility) {
+                # Check for variable references in joins which are problematic for MDE API
+                if ($content -match "\|\s*join\s+.*\blet\b") {
+                    $issues.Add("Variable references in join operations are not API-compatible")
+                }
+                
+                # Check for variable references used later in the query (after a join statement)
+                $letVariables = [regex]::Matches($content, "let\s+(\w+)\s*=") | ForEach-Object { $_.Groups[1].Value }
+                $lines = $content -split "`n"
+                $joinFound = $false
+                
+                foreach ($line in $lines) {
+                    if ($line -match "\|\s*join\s+") {
+                        $joinFound = $true
+                    }
+                    
+                    if ($joinFound) {
+                        foreach ($var in $letVariables) {
+                            if ($line -match "\b$var\.") {
+                                $issues.Add("Variable reference after join statement: '$var' may not be API-compatible")
+                                break
+                            }
+                        }
+                    }
+                }
+                
+                # Check for known non-existent field names in MDE API
+                $nonExistentFields = @("ProcessFileName", "SentBytes", "Application")
+                foreach ($field in $nonExistentFields) {
+                    if ($content -match "\b$field\b") {
+                        $issues.Add("Field name '$field' is not available in MDE API schema")
+                    }
+                }
+
+                # Check for simple column references in joins that need table qualification
+                if ($content -match "\|\s*join\s+.*\bon\s+(?!.*[\$]left\.|\$right\.).*DeviceId") {
+                    $issues.Add("Join without fully qualified column references (use `$left.Column == `$right.Column syntax)")
+                }
+            }
+
             if ($issues.Count -eq 0) {
                 Write-Log "No issues found in '$Path'" -Level SUCCESS
                 return @{Path=$Path; Passed=$true; Issues=@()}
@@ -147,6 +190,14 @@ function Test-KqlQuery {
                     if ($issues -contains "Missing time filter on $table") {
                         $fixed = $fixed -replace "(\b$table\b)(?!\s*\|\s*where\s+.*ago\()", "`$1 | where Timestamp > ago(1d)"
                     }
+                }
+
+                # Fix known field name errors
+                if ($issues -contains "Field name 'ProcessFileName' is not available in MDE API schema") {
+                    $fixed = $fixed -replace "\bProcessFileName\b", "InitiatingProcessFileName"
+                }
+                if ($issues -contains "Field name 'SentBytes' is not available in MDE API schema") {
+                    $fixed = $fixed -replace "\bSentBytes\b", "BytesSent"
                 }
 
                 if ($PSCmdlet.ShouldProcess($Path, "Backup original query")) {
@@ -181,6 +232,57 @@ function Test-KqlQuerySyntax {
     }
 }
 
+function Test-ApiCompatibility {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$QueryPath
+    )
+    
+    try {
+        $content = Get-Content -Path $QueryPath -Raw
+        $issues = [System.Collections.Generic.List[string]]::new()
+        
+        # Check for variable declarations
+        $hasVariableDeclarations = $content -match "\blet\s+\w+\s*=\s*"
+        if ($hasVariableDeclarations) {
+            $variables = [regex]::Matches($content, "let\s+(\w+)\s*=") | ForEach-Object { $_.Groups[1].Value }
+            $issues.Add("Query contains variable declarations ($($variables -join ', ')), which may not work properly with MDE API")
+        }
+        
+        # Check for column references in joins
+        if ($content -match "\|\s*join\s+" -and $content -notmatch "\|\s*join\s+.*\bon\s+\`\$left\.") {
+            $issues.Add("Join operations may not be using fully qualified column references")
+        }
+        
+        # Check for specific field names not in schema
+        $schema = Get-CurrentMdeSchema
+        foreach ($table in $schema.Keys) {
+            if ($content -match "\b$table\b") {
+                $fields = [regex]::Matches($content, "(?<=$table\s*\|.*?)\b(\w+)\b") | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -notin $schema[$table] -and $_ -ne "where" -and $_ -ne "project" -and $_ -ne "join" -and $_ -ne "distinct" -and $_ -ne "summarize" -and $_ -ne "extend" }
+                foreach ($field in $fields) {
+                    $issues.Add("Field '$field' may not exist in schema for $table")
+                }
+            }
+        }
+        
+        if ($issues.Count -gt 0) {
+            $queryFileName = Split-Path -Leaf $QueryPath
+            Write-Log "API compatibility issues in '$queryFileName':" -Level WARNING
+            foreach ($issue in $issues) {
+                Write-Log " - $issue" -Level WARNING
+            }
+            return $false
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Log "Error testing API compatibility: $_" -Level ERROR
+        return $false
+    }
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $dir = $QueryDirectory
@@ -197,7 +299,18 @@ if ($MyInvocation.InvocationName -ne '.') {
         # Use FullName property to ensure full file paths are passed to Test-KqlQuery
         $results = Get-ChildItem -Path $dir -Filter '*.kql' -File | ForEach-Object {
             Write-Log "Processing file: $($_.FullName)" -Level DEBUG
-            Test-KqlQuery -Path $_.FullName
+            $validation = Test-KqlQuery -Path $_.FullName
+            
+            # Additional API compatibility check
+            if ($ValidateApiCompatibility -and $validation.Passed) {
+                $apiCompatible = Test-ApiCompatibility -QueryPath $_.FullName
+                if (-not $apiCompatible) {
+                    $validation.Passed = $false
+                    $validation.Issues += "API compatibility issues detected"
+                }
+            }
+            
+            $validation
         }
 
         $failCount = ($results | Where-Object { -not $_.Passed } | Measure-Object).Count

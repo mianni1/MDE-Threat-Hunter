@@ -10,10 +10,9 @@
 // Investigate the context of the command execution, verify if it was authorised administrative activity, check for newly created SUID binaries, and review user privilege changes.
 // END_DESCRIPTION
 
-let lookback_days = 7;
-
+// API-compatible version (removed variable declaration)
 DeviceProcessEvents
-| where Timestamp > ago(lookback_days * 1d)
+| where Timestamp > ago(7d)
 | where FileName in~ (
     "sudo", 
     "su", 
