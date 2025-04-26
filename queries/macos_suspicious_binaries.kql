@@ -10,29 +10,44 @@
 // Investigate identified binaries, check reputation through threat intelligence sources, remove malicious files, and determine the initial infection vector.
 // END_DESCRIPTION
 
-// API-compatible query
-DeviceFileEvents
+// API-compatible query with aliases and proper column handling
+DeviceFileEvents as DFE
 | where Timestamp > ago(24h)
-| where DeviceFileEvents.FileName endswith ".app" or DeviceFileEvents.FileName endswith ".bin" or DeviceFileEvents.FileName endswith ".sh"
+| where FileName endswith ".app" or FileName endswith ".bin" or FileName endswith ".sh"
+| project 
+    DFE_Timestamp=Timestamp,
+    DFE_DeviceName=DeviceName,
+    DFE_FileName=FileName,
+    DFE_FolderPath=FolderPath,
+    DeviceId,
+    ActionType,
+    InitiatingProcessAccountName,
+    InitiatingProcessCommandLine
 | join kind=leftouter (
-    DeviceFileCertificateInfo
+    DeviceFileCertificateInfo as DFCI
     | where Timestamp > ago(24h)
-    | project DeviceId, DeviceFileCertificateInfo.FileName, Signer, SignatureStatus, SHA256
-) on DeviceId, $left.FileName == $right.FileName
+    | project 
+        DeviceId,
+        DFCI_FileName=FileName,
+        Signer,
+        SignatureStatus,
+        SHA256
+) on DeviceId
+| where DFE_FileName == DFCI_FileName or isempty(DFCI_FileName)
 | where 
     SignatureStatus == "Unsigned" or
     SignatureStatus == "Revoked" or
-    FolderPath has_any ("/tmp/", "/private/tmp/", "/var/tmp/", "/dev/", "/private/var/folders/") or
+    DFE_FolderPath has_any ("/tmp/", "/private/tmp/", "/var/tmp/", "/dev/", "/private/var/folders/") or
     InitiatingProcessCommandLine has_any ("curl ", "wget ", "chmod +x")
 | project
-    Timestamp = DeviceFileEvents.Timestamp,
-    DeviceName = DeviceFileEvents.DeviceName,
-    FileName = DeviceFileEvents.FileName,
-    FolderPath = DeviceFileEvents.FolderPath,
+    Timestamp = DFE_Timestamp,
+    DeviceName = DFE_DeviceName,
+    FileName = DFE_FileName,
+    FolderPath = DFE_FolderPath,
     Signer,
     SignatureStatus,
     SHA256,
-    ActionType = DeviceFileEvents.ActionType,
-    InitiatingProcessAccountName = DeviceFileEvents.InitiatingProcessAccountName,
-    InitiatingProcessCommandLine = DeviceFileEvents.InitiatingProcessCommandLine,
-    ReportId = hash_sha256(strcat(DeviceFileEvents.DeviceName, DeviceFileEvents.FileName, tostring(DeviceFileEvents.Timestamp)))
+    ActionType,
+    InitiatingProcessAccountName,
+    InitiatingProcessCommandLine,
+    ReportId = hash_sha256(strcat(DFE_DeviceName, DFE_FileName, tostring(DFE_Timestamp)))

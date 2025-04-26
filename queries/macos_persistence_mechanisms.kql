@@ -10,10 +10,10 @@
 // Review the identified plist files for legitimacy, verify publisher signatures, remove unauthorised launch agents/daemons, and investigate the process that created them.
 // END_DESCRIPTION
 
-// API-compatible version - using subqueries instead of variables
-DeviceFileCertificateInfo
+// API-compatible version - using aliases and project to manage columns
+DeviceFileCertificateInfo as DFCI
 | where Timestamp > ago(24h)
-| where DeviceFileCertificateInfo.FileName endswith ".plist"
+| where FileName endswith ".plist"
 | where FolderPath has_any (
     "/Library/LaunchAgents/",
     "/Library/LaunchDaemons/",
@@ -21,22 +21,38 @@ DeviceFileCertificateInfo
     "/System/Library/LaunchDaemons/",
     "/Users/"
 )
-| join kind=inner (
-    DeviceFileEvents
-    | where Timestamp > ago(24h)
-    | where ActionType in ("FileCreated", "FileModified")
-    | where DeviceFileEvents.FileName endswith ".plist"
-) on DeviceId, $left.FileName == $right.FileName
-| where not(Signer in~ ("Apple Inc.", "Apple Computer, Inc."))
-| project
-    Timestamp = DeviceFileEvents.Timestamp,
-    DeviceName = DeviceFileEvents.DeviceName,
-    FileName = DeviceFileCertificateInfo.FileName,
-    FolderPath = DeviceFileCertificateInfo.FolderPath,
+| project 
+    DFCI_FileName=FileName,
+    DFCI_FolderPath=FolderPath,
+    DeviceId,
     Signer,
     SignatureStatus,
-    ActionType = DeviceFileEvents.ActionType,
-    InitiatingProcessAccountName = DeviceFileEvents.InitiatingProcessAccountName,
-    InitiatingProcessCommandLine = DeviceFileEvents.InitiatingProcessCommandLine,
+    SHA256
+| join kind=inner (
+    DeviceFileEvents as DFE
+    | where Timestamp > ago(24h)
+    | where ActionType in ("FileCreated", "FileModified")
+    | where FileName endswith ".plist"
+    | project 
+        DFE_Timestamp=Timestamp,
+        DFE_DeviceName=DeviceName,
+        DFE_FileName=FileName,
+        DeviceId,
+        ActionType,
+        InitiatingProcessAccountName,
+        InitiatingProcessCommandLine
+) on DeviceId
+| where DFCI_FileName == DFE_FileName
+| where not(Signer in~ ("Apple Inc.", "Apple Computer, Inc."))
+| project
+    Timestamp = DFE_Timestamp,
+    DeviceName = DFE_DeviceName,
+    FileName = DFCI_FileName,
+    FolderPath = DFCI_FolderPath,
+    Signer,
+    SignatureStatus,
+    ActionType,
+    InitiatingProcessAccountName,
+    InitiatingProcessCommandLine,
     SHA256,
-    ReportId = hash_sha256(strcat(DeviceFileEvents.DeviceName, DeviceFileCertificateInfo.FileName, FolderPath, tostring(DeviceFileEvents.Timestamp)))
+    ReportId = hash_sha256(strcat(DFE_DeviceName, DFCI_FileName, DFCI_FolderPath, tostring(DFE_Timestamp)))

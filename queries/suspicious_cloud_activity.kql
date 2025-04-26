@@ -58,7 +58,6 @@ CloudAppEvents
     DeviceOS,
     Browser,
     RiskScore,
-    Application,
     ActivityType,
     ObjectName,
     DownloadedFileCount,

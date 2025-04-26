@@ -34,7 +34,6 @@ DeviceRegistryEvents
     RegistryKey,
     RegistryValueName,
     RegistryValueData,
-    ProcessId,
     FileName,
     FolderPath,
     InitiatingProcessFileName,

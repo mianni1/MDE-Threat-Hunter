@@ -50,7 +50,6 @@ DeviceProcessEvents
     DeviceName,
     AccountName,
     AccountDomain,
-    ProcessId,
     FileName,
     CommandTruncated,
     SuspiciousFlags,
