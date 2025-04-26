@@ -28,7 +28,7 @@ env:
 jobs:
   # Main environment preparation job
   prepare-environment:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
     name: Prepare Hunting Environment
     runs-on: [self-hosted, Linux, X64]
     outputs:
@@ -65,7 +65,7 @@ jobs:
           # Set environment variables for all subsequent steps - fix for GitHub Actions syntax
           echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=\"--max-old-space-size=${NODE_MEMORY_LIMIT}\"" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
       
       # Comprehensive environment setup with integrated disk cleanup
       - name: Setup environment
@@ -272,7 +272,7 @@ jobs:
   # Run queries for each platform category in parallel
   hunt-parallel:
     # only run if a valid matrix was generated
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')) && needs.prepare-environment.outputs.matrix != ''
+    if: ((github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')) && needs.prepare-environment.outputs.matrix != ''
     name: Hunt - ${{ matrix.group_name }}
     needs: prepare-environment
     runs-on: [self-hosted, Linux, X64]
@@ -457,7 +457,7 @@ jobs:
   
   # Aggregate and report all findings
   aggregate-results:
-    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master'))
+    if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master'))
     name: Aggregate Results
     needs: [prepare-environment, hunt-parallel]
     runs-on: [self-hosted, Linux, X64]

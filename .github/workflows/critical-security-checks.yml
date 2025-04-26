@@ -24,6 +24,10 @@ permissions:
   id-token: write
   actions: read
 
+# Global environment variables
+env:
+  CACHE_KEY_DATE: "2025-04-22" # Shared cache key date for all workflows
+
 jobs:
   run-critical-queries:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
@@ -69,22 +73,22 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=\"--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}\"" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
 
-      - name: Cache PowerShell environment
-        id: cache-pwsh-env
+      # Use standardized cache keys for PowerShell modules
+      - name: Cache PowerShell modules
+        id: cache-pwsh-modules
         uses: actions/cache@v3
         with:
-          path: |
-            ~/.local/share/powershell
-            /usr/bin/pwsh
-          key: ${{ runner.os }}-pwsh-critical-${{ hashFiles('**/*.psd1') }}
+          path: ~/.local/share/powershell/Modules
+          key: ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-${{ env.CACHE_KEY_DATE }}
           restore-keys: |
-            ${{ runner.os }}-pwsh-critical-
-            ${{ runner.os }}-pwsh-
-
+            ${{ runner.os }}-pwsh-modules-${{ hashFiles('**/*.psd1') }}-
+            ${{ runner.os }}-pwsh-modules-
+      
+      # Install PowerShell if not already available
       - name: Setup PowerShell
-        if: steps.cache-pwsh-env.outputs.cache-hit != 'true'
+        if: steps.cache-pwsh-modules.outputs.cache-hit != 'true'
         shell: bash
         run: |
           if ! command -v pwsh &> /dev/null; then

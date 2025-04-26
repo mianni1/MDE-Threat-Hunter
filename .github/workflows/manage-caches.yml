@@ -1,0 +1,262 @@
+name: Cache Management
+run-name: "Cache Management: ${{ github.event_name == 'schedule' && 'Scheduled' || github.event_name == 'workflow_dispatch' && 'Manual' || 'Push' }} Run"
+
+on:
+  push:
+    branches: [staging]
+  schedule:
+    - cron: '0 0 * * 0'  # Run weekly on Sundays at midnight
+  workflow_dispatch:
+    inputs:
+      force_cleanup:
+        description: 'Force cache cleanup'
+        required: false
+        default: false
+        type: boolean
+      force_key_update:
+        description: 'Force cache key update'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: write  # Needed for cache management
+  contents: write  # Needed to update files
+
+jobs:
+  manage-caches:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master') || (github.event_name == 'push' && github.ref == 'refs/heads/staging')
+    name: Manage GitHub Caches
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+      
+      # List all caches
+      - name: List current caches
+        id: list_caches
+        shell: bash
+        run: |
+          echo "## Current GitHub Cache Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Listing cache status before cleanup..." >> $GITHUB_STEP_SUMMARY
+          
+          # Count caches and extract patterns
+          CACHE_COUNT=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
+            jq -r '.total_count')
+          
+          # Get cache size
+          CACHE_SIZE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
+            jq -r '.total_size_in_bytes / 1024 / 1024 | floor')
+          
+          echo "Total caches: $CACHE_COUNT (Size: ~${CACHE_SIZE} MB)" >> $GITHUB_STEP_SUMMARY
+          echo "total_caches=$CACHE_COUNT" >> $GITHUB_OUTPUT
+          echo "cache_size=$CACHE_SIZE" >> $GITHUB_OUTPUT
+      
+      # Check for PowerShell module updates that would warrant a cache refresh
+      - name: Check for module updates
+        id: check_modules
+        shell: pwsh
+        run: |
+          # Configure PSGallery
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+          $moduleUpdatesAvailable = $false
+          $updateSummary = ""
+          
+          # Check key modules for updates
+          $keyModules = @(
+            "Microsoft.Graph.Security",
+            "PSWriteHTML",
+            "ImportExcel"
+          )
+          
+          foreach ($moduleName in $keyModules) {
+            try {
+              $currentModule = Get-Module -Name $moduleName -ListAvailable | 
+                Sort-Object Version -Descending | Select-Object -First 1
+              
+              if ($currentModule) {
+                $latestModule = Find-Module -Name $moduleName -Repository PSGallery
+                
+                if ($latestModule.Version -gt $currentModule.Version) {
+                  $moduleUpdatesAvailable = $true
+                  $updateSummary += "- $moduleName: Current v$($currentModule.Version) → Available v$($latestModule.Version)`n"
+                }
+              }
+            } catch {
+              Write-Host "Error checking module $moduleName: $_"
+            }
+          }
+          
+          echo "module_updates_available=$moduleUpdatesAvailable" >> $env:GITHUB_OUTPUT
+          echo "update_summary=$updateSummary" >> $env:GITHUB_OUTPUT
+      
+      # Determine if we need cleanup based on cache count or manual trigger
+      - name: Determine if cleanup needed
+        id: check_cleanup
+        shell: bash
+        run: |
+          FORCE_CLEANUP="${{ github.event.inputs.force_cleanup }}"
+          CACHE_COUNT="${{ steps.list_caches.outputs.total_caches }}"
+          
+          if [ "$FORCE_CLEANUP" = "true" ] || [ "$CACHE_COUNT" -gt "20" ]; then
+            echo "cleanup_needed=true" >> $GITHUB_OUTPUT
+            echo "Cleanup needed: Yes (Caches: $CACHE_COUNT, Force: $FORCE_CLEANUP)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "cleanup_needed=false" >> $GITHUB_OUTPUT
+            echo "Cleanup needed: No (Caches: $CACHE_COUNT, Force: $FORCE_CLEANUP)" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # Determine if the cache key needs to be updated (monthly or when modules update)
+      - name: Check if cache key update needed
+        id: check_key_update
+        shell: bash
+        run: |
+          # Get the current cache key date
+          CURRENT_DATE=$(grep "CACHE_KEY_DATE:" .github/workflows/parallel-threat-hunting.yml | sed 's/.*"\(.*\)".*/\1/')
+          echo "current_date=$CURRENT_DATE" >> $GITHUB_OUTPUT
+          
+          # Get the current month and year
+          CURRENT_MONTH=$(date +%Y-%m)
+          KEY_DATE_MONTH=$(echo $CURRENT_DATE | cut -d'-' -f1,2)
+          
+          # Force update flag
+          FORCE_UPDATE="${{ github.event.inputs.force_key_update }}"
+          
+          # Module updates available flag
+          MODULE_UPDATES="${{ steps.check_modules.outputs.module_updates_available }}"
+          
+          # Check if key is from a previous month or updates are available
+          if [ "$FORCE_UPDATE" = "true" ] || [ "$CURRENT_MONTH" != "$KEY_DATE_MONTH" ] || [ "$MODULE_UPDATES" = "true" ]; then
+            # Generate a new key date (current date)
+            NEW_DATE=$(date +%Y-%m-%d)
+            echo "key_update_needed=true" >> $GITHUB_OUTPUT
+            echo "new_date=$NEW_DATE" >> $GITHUB_OUTPUT
+            
+            echo "Cache key update needed:" >> $GITHUB_STEP_SUMMARY
+            echo "- Current key date: $CURRENT_DATE" >> $GITHUB_STEP_SUMMARY
+            echo "- New key date: $NEW_DATE" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$MODULE_UPDATES" = "true" ]; then
+              echo "- Reason: PowerShell module updates available" >> $GITHUB_STEP_SUMMARY
+              echo "${{ steps.check_modules.outputs.update_summary }}" >> $GITHUB_STEP_SUMMARY
+            elif [ "$CURRENT_MONTH" != "$KEY_DATE_MONTH" ]; then
+              echo "- Reason: Monthly cache refresh" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- Reason: Forced update" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "key_update_needed=false" >> $GITHUB_OUTPUT
+            echo "Cache key update not needed (Current: $CURRENT_DATE)" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # Update cache key date if needed
+      - name: Update cache key date
+        if: steps.check_key_update.outputs.key_update_needed == 'true'
+        shell: bash
+        run: |
+          NEW_DATE="${{ steps.check_key_update.outputs.new_date }}"
+          CURRENT_DATE="${{ steps.check_key_update.outputs.current_date }}"
+          
+          echo "Updating cache key date from $CURRENT_DATE to $NEW_DATE" >> $GITHUB_STEP_SUMMARY
+          
+          # Update cache date in all workflows
+          find .github/workflows -name "*.yml" -exec sed -i "s/CACHE_KEY_DATE: \"[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\"/CACHE_KEY_DATE: \"$NEW_DATE\"/g" {} \;
+          
+          # Commit the changes
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .github/workflows/*.yml
+          git commit -m "Automatically update cache key date to $NEW_DATE" || echo "No changes to commit"
+          git push
+      
+      # Clean up caches if needed
+      - name: Delete old caches
+        if: steps.check_cleanup.outputs.cleanup_needed == 'true'
+        shell: bash
+        run: |
+          echo "Cleaning up caches..." >> $GITHUB_STEP_SUMMARY
+          
+          # Delete caches that aren't using the current system
+          gh extension install actions/gh-actions-cache
+          
+          # Find outdated caches - ones not using the standard format we want
+          CACHES_TO_DELETE=$(gh actions-cache list -L 100 | grep -v "pwsh-modules" | awk '{print $1}')
+          
+          if [ -n "$CACHES_TO_DELETE" ]; then
+            echo "Deleting outdated caches:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            for CACHE_ID in $CACHES_TO_DELETE; do
+              gh actions-cache delete --key $CACHE_ID --confirm
+              echo "Deleted cache: $CACHE_ID" >> $GITHUB_STEP_SUMMARY
+            done
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No outdated caches found" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # Delete all caches if key was updated
+      - name: Delete all caches on key update
+        if: steps.check_key_update.outputs.key_update_needed == 'true'
+        shell: bash
+        run: |
+          echo "Invalidating all caches due to key update..." >> $GITHUB_STEP_SUMMARY
+          
+          # Install GitHub CLI cache extension if needed
+          gh extension install actions/gh-actions-cache 2>/dev/null || true
+          
+          # List and delete all caches
+          CACHE_IDS=$(gh actions-cache list -L 100 | awk '{print $1}')
+          
+          if [ -n "$CACHE_IDS" ]; then
+            echo "Deleting all caches:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            for CACHE_ID in $CACHE_IDS; do
+              gh actions-cache delete --key $CACHE_ID --confirm
+              echo "Deleted cache: $CACHE_ID" >> $GITHUB_STEP_SUMMARY
+            done
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # Final cache status report
+      - name: Report cache status
+        shell: bash
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Cache Status After Management" >> $GITHUB_STEP_SUMMARY
+          
+          # Count caches again after cleanup
+          FINAL_CACHE_COUNT=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
+            jq -r '.total_count')
+          
+          # Get cache size
+          CACHE_SIZE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
+            jq -r '.total_size_in_bytes / 1024 / 1024 | floor')
+          
+          echo "Total caches remaining: $FINAL_CACHE_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "Total cache size: ~${CACHE_SIZE} MB" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ steps.check_cleanup.outputs.cleanup_needed }}" == "true" || "${{ steps.check_key_update.outputs.key_update_needed }}" == "true" ]]; then
+            INITIAL_COUNT=${{ steps.list_caches.outputs.total_caches }}
+            INITIAL_SIZE=${{ steps.list_caches.outputs.cache_size }}
+            DELETED=$(($INITIAL_COUNT - $FINAL_CACHE_COUNT))
+            SIZE_DIFF=$(($INITIAL_SIZE - $CACHE_SIZE))
+            
+            echo "Caches deleted: $DELETED" >> $GITHUB_STEP_SUMMARY
+            echo "Storage freed: ~${SIZE_DIFF} MB" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "${{ steps.check_key_update.outputs.key_update_needed }}" == "true" ]; then
+              echo "**Cache key updated to: ${{ steps.check_key_update.outputs.new_date }}**" >> $GITHUB_STEP_SUMMARY
+              echo "All workflows will create fresh caches on next run." >> $GITHUB_STEP_SUMMARY
+            fi
+          fi

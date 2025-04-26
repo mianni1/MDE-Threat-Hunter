@@ -157,7 +157,8 @@ function Test-KqlQuery {
                 }
 
                 # Check for simple column references in joins that need table qualification
-                if ($content -match "\|\s*join\s+.*\bon\s+(?!.*[\$]left\.|\$right\.).*DeviceId") {
+                # Fix: Properly escape the $ characters in the regex pattern
+                if ($content -match "\|\s*join\s+.*\bon\s+(?!.*\`$left\.|\`$right\.).*DeviceId") {
                     $issues.Add("Join without fully qualified column references (use `$left.Column == `$right.Column syntax)")
                 }
             }

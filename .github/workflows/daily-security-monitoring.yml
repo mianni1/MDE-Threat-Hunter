@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   run-standard-queries:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/staging') || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.ref == 'refs/heads/master')
     name: Run Standard Scans
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 30
@@ -57,7 +57,7 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=\"--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}\"" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
 
       # Unified environment setup and disk cleanup
       - name: Setup environment
