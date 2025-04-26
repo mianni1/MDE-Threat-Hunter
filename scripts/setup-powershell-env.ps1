@@ -8,16 +8,13 @@ param (
     [switch] $ForceUpdate,
     
     [Parameter()]
-    [switch] $Cleanup,
-    
-    [Parameter()]
-    [switch] $Verbose
+    [switch] $Cleanup
 )
 
 # Configure strict mode and error handling
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$VerbosePreference = if ($Verbose) { 'Continue' } else { 'SilentlyContinue' }
+$VerbosePreference = if ($PSCmdlet.MyInvocation.BoundParameters["Verbose"]) { 'Continue' } else { 'SilentlyContinue' }
 $ProgressPreference = 'SilentlyContinue'  # Suppress progress bars for performance
 
 # Required modules with versions
