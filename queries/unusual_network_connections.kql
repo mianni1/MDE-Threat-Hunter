@@ -1,5 +1,5 @@
 // DESCRIPTION:
-// Detection of suspicious network connections from Linux systems that may indicate command and control activity or data exfiltration.
+// Detection of suspicious network connections from Windows systems that may indicate command and control activity or data exfiltration.
 // TECHNICAL:
 // This alert identifies unusual network connections including direct connections to uncommon ports, use of non-standard tools for connections, and connections to potential C2 infrastructure.
 // MITRE_ATTACK:
@@ -22,7 +22,7 @@ DeviceNetworkEvents
 | extend RiskScore = case(
     ProcessCommandLine has_any("-e sh", "-e bash", "reverse shell"), 10,
     ProcessFileName =~ "nc" and RemotePort in (4444, 6666, 9001), 8,
-    ProcessFileName in~ ("python", "perl", "ruby") and ProcessCommandLine has_any("socket(", "connect("), 7,
+    ProcessFileName in~ ("python", "perl", "ruby") and ProcessCommandLine has_any("socket", "connect"), 7,
     ProcessCommandLine has_any("proxy", "socks", "-D", "-L"), 6,
     RemotePort in (8080, 8443, 4545), 5,
     RemotePort in (22, 23), 4,
