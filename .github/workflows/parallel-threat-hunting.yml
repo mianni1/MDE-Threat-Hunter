@@ -43,6 +43,30 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
       
+      # Load 1Password secrets in prepare-environment job
+      - name: Load memory management configuration
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          DOTNET_HEAP_LIMIT: op://Security Automation/Runner Memory Config/DOTNET_HEAP_LIMIT
+          COMPLUS_HEAP_LIMIT: op://Security Automation/Runner Memory Config/COMPLUS_HEAP_LIMIT
+          NODE_MEMORY_LIMIT: op://Security Automation/Runner Memory Config/NODE_MEMORY_LIMIT
+          VIRTUAL_MEM_LIMIT: op://Security Automation/Runner Memory Config/VIRTUAL_MEM_LIMIT
+      
+      # Set up memory limits directly in workflow
+      - name: Configure memory limits
+        shell: bash
+        run: |
+          # Apply ulimit directly
+          ulimit -Sv ${{ env.VIRTUAL_MEM_LIMIT }}
+          
+          # Set environment variables for all subsequent steps
+          echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
+          echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+      
       # Comprehensive environment setup with integrated disk cleanup
       - name: Setup environment
         id: env_setup

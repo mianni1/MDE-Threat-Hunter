@@ -27,7 +27,7 @@ jobs:
     name: Weekly Threat Hunting Analysis
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 60
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,7 +35,30 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
       
-      # Unified environment setup with integrated disk cleanup
+      # Load memory management secrets from 1Password    
+      - name: Load memory management configuration
+        uses: 1password/load-secrets-action@v1
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN_READ }}
+          DOTNET_HEAP_LIMIT: op://Security Automation/Runner Memory Config/DOTNET_HEAP_LIMIT
+          COMPLUS_HEAP_LIMIT: op://Security Automation/Runner Memory Config/COMPLUS_HEAP_LIMIT
+          NODE_MEMORY_LIMIT: op://Security Automation/Runner Memory Config/NODE_MEMORY_LIMIT
+          VIRTUAL_MEM_LIMIT: op://Security Automation/Runner Memory Config/VIRTUAL_MEM_LIMIT
+      
+      # Set up memory limits directly in workflow
+      - name: Configure memory limits
+        shell: bash
+        run: |
+          # Apply ulimit directly
+          ulimit -Sv ${{ env.VIRTUAL_MEM_LIMIT }}
+          
+          # Set environment variables for all subsequent steps
+          echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
+          echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+
       - name: Setup environment and cleanup
         id: env_setup
         shell: bash
@@ -237,7 +260,6 @@ jobs:
             $findingSummary | ConvertTo-Json | Out-File -FilePath "results/weekly-hunting/finding_summary.json"
             $findingSummary | Select-Object QueryName, Count, Severity | 
               Export-Csv -Path "results/weekly-hunting/weekly_threat_hunting_summary.csv" -NoTypeInformation
-            
             # Save suspicious devices if found
             if ($suspiciousDevices.Count -gt 0) {
               $suspiciousDevices | ConvertTo-Json | Out-File -FilePath "results/weekly-hunting/suspicious_devices.json"
