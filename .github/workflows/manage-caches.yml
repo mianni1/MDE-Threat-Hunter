@@ -49,12 +49,12 @@ jobs:
           # Count caches and extract patterns
           CACHE_COUNT=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
-            jq -r '.total_count')
+            jq -r '.total_count // 0')
           
-          # Get cache size
+          # Get cache size with error handling
           CACHE_SIZE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
-            jq -r '.total_size_in_bytes / 1024 / 1024 | floor')
+            jq -r 'if .total_size_in_bytes then .total_size_in_bytes / 1024 / 1024 | floor else 0 end')
           
           echo "Total caches: $CACHE_COUNT (Size: ~${CACHE_SIZE} MB)" >> $GITHUB_STEP_SUMMARY
           echo "total_caches=$CACHE_COUNT" >> $GITHUB_OUTPUT
@@ -236,12 +236,12 @@ jobs:
           # Count caches again after cleanup
           FINAL_CACHE_COUNT=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
-            jq -r '.total_count')
+            jq -r '.total_count // 0')
           
-          # Get cache size
+          # Get cache size with error handling
           CACHE_SIZE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/actions/caches" | \
-            jq -r '.total_size_in_bytes / 1024 / 1024 | floor')
+            jq -r 'if .total_size_in_bytes then .total_size_in_bytes / 1024 / 1024 | floor else 0 end')
           
           echo "Total caches remaining: $FINAL_CACHE_COUNT" >> $GITHUB_STEP_SUMMARY
           echo "Total cache size: ~${CACHE_SIZE} MB" >> $GITHUB_STEP_SUMMARY
