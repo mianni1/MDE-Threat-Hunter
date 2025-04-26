@@ -65,7 +65,7 @@ jobs:
           # Set environment variables for all subsequent steps - fix for GitHub Actions syntax
           echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=\"--max-old-space-size=${NODE_MEMORY_LIMIT}\"" >> $GITHUB_ENV
       
       # Comprehensive environment setup with integrated disk cleanup
       - name: Setup environment

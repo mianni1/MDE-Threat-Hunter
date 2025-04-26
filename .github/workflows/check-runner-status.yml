@@ -83,7 +83,7 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=\"--max-old-space-size=${NODE_MEMORY_LIMIT}\"" >> $GITHUB_ENV
       
       # Enhanced health check - Runner specific
       - name: Check runner health
@@ -289,7 +289,7 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${DOTNET_HEAP_LIMIT}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${COMPLUS_HEAP_LIMIT}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${NODE_MEMORY_LIMIT}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=\"--max-old-space-size=${NODE_MEMORY_LIMIT}\"" >> $GITHUB_ENV
       
       # Enhanced health check - Runner specific
       - name: Check runner health

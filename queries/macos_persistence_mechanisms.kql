@@ -10,40 +10,33 @@
 // Review the identified plist files for legitimacy, verify publisher signatures, remove unauthorised launch agents/daemons, and investigate the process that created them.
 // END_DESCRIPTION
 
-let lookback_hours = 24;
-
-let plist_cert_info =
-    DeviceFileCertificateInfo
-    | where Timestamp > ago(lookback_hours * 1h)
-    | where FileName endswith ".plist"
-    | where FolderPath has_any (
-        "/Library/LaunchAgents/",
-        "/Library/LaunchDaemons/",
-        "/System/Library/LaunchAgents/",
-        "/System/Library/LaunchDaemons/",
-        "/Users/"
-    );
-
-let plist_file_events =
-    DeviceFileEvents
-    | where Timestamp > ago(lookback_hours * 1h)
-    | where ActionType in ("FileCreated", "FileModified")
-    | where FileName endswith ".plist";
-
-plist_cert_info
+// API-compatible version - using subqueries instead of variables
+DeviceFileCertificateInfo
+| where Timestamp > ago(24h)
+| where DeviceFileCertificateInfo.FileName endswith ".plist"
+| where FolderPath has_any (
+    "/Library/LaunchAgents/",
+    "/Library/LaunchDaemons/",
+    "/System/Library/LaunchAgents/",
+    "/System/Library/LaunchDaemons/",
+    "/Users/"
+)
 | join kind=inner (
-    plist_file_events
-) on DeviceId, FileName
+    DeviceFileEvents
+    | where Timestamp > ago(24h)
+    | where ActionType in ("FileCreated", "FileModified")
+    | where DeviceFileEvents.FileName endswith ".plist"
+) on DeviceId, $left.FileName == $right.FileName
 | where not(Signer in~ ("Apple Inc.", "Apple Computer, Inc."))
 | project
-    Timestamp = plist_file_events.Timestamp,
-    DeviceName = plist_file_events.DeviceName,
-    FileName,
-    FolderPath,
+    Timestamp = DeviceFileEvents.Timestamp,
+    DeviceName = DeviceFileEvents.DeviceName,
+    FileName = DeviceFileCertificateInfo.FileName,
+    FolderPath = DeviceFileCertificateInfo.FolderPath,
     Signer,
     SignatureStatus,
-    ActionType = plist_file_events.ActionType,
-    InitiatingProcessAccountName = plist_file_events.InitiatingProcessAccountName,
-    InitiatingProcessCommandLine = plist_file_events.InitiatingProcessCommandLine,
+    ActionType = DeviceFileEvents.ActionType,
+    InitiatingProcessAccountName = DeviceFileEvents.InitiatingProcessAccountName,
+    InitiatingProcessCommandLine = DeviceFileEvents.InitiatingProcessCommandLine,
     SHA256,
-    ReportId = hash_sha256(strcat(plist_file_events.DeviceName, FileName, FolderPath, tostring(Timestamp)))
+    ReportId = hash_sha256(strcat(DeviceFileEvents.DeviceName, DeviceFileCertificateInfo.FileName, FolderPath, tostring(DeviceFileEvents.Timestamp)))

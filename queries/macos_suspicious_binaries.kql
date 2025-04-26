@@ -1,49 +1,38 @@
 // DESCRIPTION:
-// Detection of potentially malicious persistence mechanisms on macOS systems through launch agent and daemon plist files.
+// Detection of suspicious binary files on macOS systems that may indicate malware.
 // TECHNICAL:
-// This alert identifies newly created or modified .plist files in macOS launch directories that are not signed by Apple. These files can be used by attackers to maintain persistence across system reboots by automatically executing malicious code.
+// This alert identifies executable files with unusual characteristics such as unsigned binaries, files with revoked certificates, binaries with suspicious paths or names, and those matching known malware patterns.
 // MITRE_ATTACK:
-// T1547.011 (Plist Modification), T1543.001 (Launch Agent/Daemon), T1546 (Event Triggered Execution)
+// T1204 (User Execution), T1059.004 (Command and Scripting Interpreter: Unix Shell), T1543.001 (Create or Modify System Process: Launch Agent)
 // IMPACT:
-// Attackers may have established persistence that allows malware to survive system reboots and user logoffs.
+// Malicious binaries may be present on macOS systems, potentially leading to data theft, system compromise, or persistence.
 // REMEDIATION:
-// Review the identified plist files for legitimacy, verify publisher signatures, remove unauthorised launch agents/daemons, and investigate the process that created them.
+// Investigate identified binaries, check reputation through threat intelligence sources, remove malicious files, and determine the initial infection vector.
 // END_DESCRIPTION
 
-let lookback_hours = 24;
-
-let plist_cert_info =
+// API-compatible query
+DeviceFileEvents
+| where Timestamp > ago(24h)
+| where DeviceFileEvents.FileName endswith ".app" or DeviceFileEvents.FileName endswith ".bin" or DeviceFileEvents.FileName endswith ".sh"
+| join kind=leftouter (
     DeviceFileCertificateInfo
-    | where Timestamp > ago(lookback_hours * 1h)
-    | where FileName endswith ".plist"
-    | where FolderPath has_any (
-        "/Library/LaunchAgents/",
-        "/Library/LaunchDaemons/",
-        "/System/Library/LaunchAgents/",
-        "/System/Library/LaunchDaemons/",
-        "/Users/"
-    );
-
-let plist_file_events =
-    DeviceFileEvents
-    | where Timestamp > ago(lookback_hours * 1h)
-    | where ActionType in ("FileCreated", "FileModified")
-    | where FileName endswith ".plist";
-
-plist_cert_info
-| join kind=inner (
-    plist_file_events
-) on DeviceId, FileName
-| where not(Signer in~ ("Apple Inc.", "Apple Computer, Inc."))
+    | where Timestamp > ago(24h)
+    | project DeviceId, DeviceFileCertificateInfo.FileName, Signer, SignatureStatus, SHA256
+) on DeviceId, $left.FileName == $right.FileName
+| where 
+    SignatureStatus == "Unsigned" or
+    SignatureStatus == "Revoked" or
+    FolderPath has_any ("/tmp/", "/private/tmp/", "/var/tmp/", "/dev/", "/private/var/folders/") or
+    InitiatingProcessCommandLine has_any ("curl ", "wget ", "chmod +x")
 | project
-    Timestamp = plist_file_events.Timestamp,
-    DeviceName = plist_file_events.DeviceName,
-    FileName,
-    FolderPath,
+    Timestamp = DeviceFileEvents.Timestamp,
+    DeviceName = DeviceFileEvents.DeviceName,
+    FileName = DeviceFileEvents.FileName,
+    FolderPath = DeviceFileEvents.FolderPath,
     Signer,
     SignatureStatus,
-    ActionType = plist_file_events.ActionType,
-    InitiatingProcessAccountName = plist_file_events.InitiatingProcessAccountName,
-    InitiatingProcessCommandLine = plist_file_events.InitiatingProcessCommandLine,
     SHA256,
-    ReportId = hash_sha256(strcat(plist_file_events.DeviceName, FileName, FolderPath, tostring(Timestamp)))
+    ActionType = DeviceFileEvents.ActionType,
+    InitiatingProcessAccountName = DeviceFileEvents.InitiatingProcessAccountName,
+    InitiatingProcessCommandLine = DeviceFileEvents.InitiatingProcessCommandLine,
+    ReportId = hash_sha256(strcat(DeviceFileEvents.DeviceName, DeviceFileEvents.FileName, tostring(DeviceFileEvents.Timestamp)))

@@ -10,12 +10,17 @@
 // Investigate the unusual logon activity, verify with the user if it was legitimate, consider forcing a password reset, and implement multi-factor authentication if not already in place.
 // END_DESCRIPTION
 
-let lookback_days = 30;
-let recent_window = 1d;
-
-let known_patterns = (
+// API-compatible query with no separate variable declarations
+DeviceLogonEvents
+| where Timestamp > ago(1d)
+| where ActionType in ("LogonSuccess", "LogonFailed")
+| extend CurrentHour = datetime_part("hour", Timestamp)
+| extend IsWeekend = dayofweek(Timestamp) == 0 or dayofweek(Timestamp) == 6
+| extend IsAfterHours = CurrentHour < 6 or CurrentHour > 18
+// Join with historical data using a subquery instead of a variable
+| join kind=leftouter (
     DeviceLogonEvents
-    | where Timestamp between (ago(lookback_days * 1d) .. ago(recent_window))
+    | where Timestamp between (ago(30d) .. ago(1d))
     | where ActionType == "LogonSuccess"
     | extend CleanRemoteDevice = tostring(RemoteDeviceName)
     | summarize 
@@ -25,20 +30,12 @@ let known_patterns = (
         KnownRemoteDevices = make_set(CleanRemoteDevice),
         LogonCount = count()
         by DeviceName
-);
-
-DeviceLogonEvents
-| where Timestamp > ago(recent_window)
-| where ActionType in ("LogonSuccess", "LogonFailed")
-| join kind=leftouter known_patterns on DeviceName
-| extend IsWeekend = dayofweek(Timestamp) == 0 or dayofweek(Timestamp) == 6
-| extend CurrentHour = datetime_part("hour", Timestamp)
+) on DeviceName
 | extend IsNewLogonHour = array_index_of(KnownLogonHours, CurrentHour) == -1
 | extend IsNewLogonType = array_index_of(KnownLogonTypes, LogonType) == -1
 | extend IsNewAccount = array_index_of(KnownLogonAccounts, AccountName) == -1
 | extend CleanRemoteDevice = tostring(RemoteDeviceName)
 | extend IsNewRemoteDevice = iff(isempty(CleanRemoteDevice), false, array_index_of(KnownRemoteDevices, CleanRemoteDevice) == -1)
-| extend IsAfterHours = CurrentHour < 6 or CurrentHour > 18
 | extend AnomalyFlags = pack_array(
     IsNewLogonHour, IsNewLogonType, IsNewAccount, IsNewRemoteDevice, IsWeekend, IsAfterHours)
 | extend AnomalyScore = array_sum(AnomalyFlags)
@@ -58,5 +55,4 @@ DeviceLogonEvents
     IsNewRemoteDevice,
     AnomalyScore,
     FailureReason,
-    Application,
     ReportId = hash_sha256(strcat(DeviceName, AccountName, LogonType, tostring(Timestamp)))

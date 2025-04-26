@@ -57,7 +57,7 @@ jobs:
           # Set environment variables for all subsequent steps
           echo "DOTNET_GCHeapHardLimit=${{ env.DOTNET_HEAP_LIMIT }}" >> $GITHUB_ENV
           echo "COMPlus_GCHeapHardLimit=${{ env.COMPLUS_HEAP_LIMIT }}" >> $GITHUB_ENV
-          echo "NODE_OPTIONS=--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}" >> $GITHUB_ENV
+          echo "NODE_OPTIONS=\"--max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}\"" >> $GITHUB_ENV
 
       - name: Setup environment and cleanup
         id: env_setup

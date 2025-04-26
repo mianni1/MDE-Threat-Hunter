@@ -10,30 +10,29 @@
 // Investigate the process initiating the connection and the destination IP, quarantine affected systems, and block further communication with suspicious destinations.
 // END_DESCRIPTION
 
-let private_ranges = dynamic(["10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "127."]);
-let known_processes = dynamic([
-    "chrome.exe", "msedge.exe", "firefox.exe", "safari.exe", "iexplore.exe", "brave.exe", "opera.exe",
-    "svchost.exe", "MsMpEng.exe", "NisSrv.exe", "OneDrive.exe", "Teams.exe", "Outlook.exe", "thunderbird.exe",
-    "github.exe", "git.exe", "slack.exe", "winstore.exe", "msteams.exe", "Dropbox.exe", "GoogleDriveFS.exe"
-]);
-
-let known_hosts = 
-    DeviceNetworkEvents
-    | where Timestamp > ago(30d)
-    | where ActionType == "ConnectionSuccess"
-    | where not(ipv4_is_private(RemoteIP))
-    | summarize KnownRemoteIPs = make_set(RemoteIP) by DeviceId, InitiatingProcessFileName;
-
+// API-compatible query - using correct field names and avoiding variables
 DeviceNetworkEvents
 | where Timestamp > ago(24h)
 | where ActionType == "ConnectionSuccess"
 | where not(ipv4_is_private(RemoteIP))
-| where InitiatingProcessFileName !in (known_processes)
-| lookup kind=leftouter known_hosts on DeviceId, InitiatingProcessFileName
+// Exclude common legitimate processes
+| where InitiatingProcessFileName !in~ (
+    "chrome.exe", "msedge.exe", "firefox.exe", "safari.exe", "iexplore.exe", "brave.exe", "opera.exe",
+    "svchost.exe", "MsMpEng.exe", "NisSrv.exe", "OneDrive.exe", "Teams.exe", "Outlook.exe", "thunderbird.exe",
+    "github.exe", "git.exe", "slack.exe", "winstore.exe", "msteams.exe", "Dropbox.exe", "GoogleDriveFS.exe"
+)
+// Join with historical data to identify uncommon destinations
+| join kind=leftouter (
+    DeviceNetworkEvents
+    | where Timestamp > ago(30d) and Timestamp < ago(1d)
+    | where ActionType == "ConnectionSuccess"
+    | where not(ipv4_is_private(RemoteIP))
+    | summarize KnownRemoteIPs = make_set(RemoteIP) by DeviceId, InitiatingProcessFileName
+) on DeviceId, InitiatingProcessFileName
 | where isnull(KnownRemoteIPs) or not(set_has_element(KnownRemoteIPs, RemoteIP))
 | extend GeoInfo = geo_info_from_ip_address(RemoteIP)
 | extend Country = tostring(parse_json(GeoInfo).country)
-| extend DataSentKB = SentBytes / 1024
+| extend DataSentKB = BytesSent / 1024  // Using BytesSent instead of SentBytes
 | where DataSentKB > 500
 | project
     Timestamp,

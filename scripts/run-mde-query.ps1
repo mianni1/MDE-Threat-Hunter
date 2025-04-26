@@ -272,6 +272,16 @@ function Execute-Query {
                             $statusCode = [int]$_.Exception.Response.StatusCode
                             $statusDescription = $_.Exception.Response.StatusDescription
                             
+                            # Capture detailed error message from response if available
+                            try {
+                                $errorResponseStream = $_.Exception.Response.GetResponseStream()
+                                $errorResponseReader = New-Object System.IO.StreamReader($errorResponseStream)
+                                $errorResponseText = $errorResponseReader.ReadToEnd()
+                                Write-Log "API Error Details: $errorResponseText" -Level ERROR
+                            } catch {
+                                Write-Log "Unable to extract detailed error message" -Level WARNING
+                            }
+                            
                             # Handle specific HTTP error codes
                             if ($statusCode -eq 401) {
                                 Write-Log "Authentication error (401): Token may have expired" -Level ERROR
@@ -284,6 +294,11 @@ function Execute-Query {
                                 else {
                                     throw [System.Net.WebException]::new("Authentication failed after multiple attempts")
                                 }
+                            }
+                            elseif ($statusCode -eq 400) {
+                                Write-Log "Bad Request (400): The query syntax may be invalid for the API" -Level ERROR
+                                Write-Log "Query Text: $QueryText" -Level DEBUG
+                                throw
                             }
                             elseif ($statusCode -eq 429) {
                                 Write-Log "Rate limit exceeded (429): Backing off for $exponentialBackoff seconds" -Level WARNING
