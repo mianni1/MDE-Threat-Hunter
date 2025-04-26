@@ -88,7 +88,7 @@ jobs:
                 
                 if ($latestModule.Version -gt $currentModule.Version) {
                   $moduleUpdatesAvailable = $true
-                  $updateSummary += "- $moduleName: Current v$($currentModule.Version) -> Available v$($latestModule.Version)`n"
+                  $updateSummary += "- $($moduleName): Current v$($currentModule.Version) -> Available v$($latestModule.Version)`n"
                 }
               }
             } catch {

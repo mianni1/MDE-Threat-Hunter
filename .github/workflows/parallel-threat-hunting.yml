@@ -112,7 +112,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=${{ env.NODE_MEMORY_LIMIT }}
         run: |
           # Setup PowerShell environment using centralized script
-          & "./scripts/setup-powershell-env.ps1" -Verbose
+          & "./scripts/setup-powershell-env.ps1"
           
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Failed to setup PowerShell environment"
