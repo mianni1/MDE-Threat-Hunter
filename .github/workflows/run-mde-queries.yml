@@ -258,7 +258,7 @@ jobs:
             
             # Execute query
             $outputPath = "results/$queryName.csv"
-            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -UseCredentials -TenantId $env:MDE_TENANT_ID -ClientId $env:MDE_CLIENT_ID -ClientSecret $env:MDE_CLIENT_SECRET
             
             # Process results
             if (Test-Path $outputPath) {

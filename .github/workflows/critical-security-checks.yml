@@ -144,7 +144,7 @@ jobs:
               
               $outputPath = Join-Path "results/critical-checks" ($queryName -replace '\.kql', '.csv')
               try {
-                ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -ErrorAction Stop
+                ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -UseCredentials -TenantId $env:MDE_TENANT_ID -ClientId $env:MDE_CLIENT_ID -ClientSecret $env:MDE_CLIENT_SECRET -ErrorAction Stop
               } 
               catch {
                 Write-Host "[INFO] Query execution completed."

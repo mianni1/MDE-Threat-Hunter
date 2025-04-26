@@ -183,7 +183,7 @@ jobs:
             $query = $query -replace 'ago\(\d+h\)', "ago($($lookbackDays)d)"
             
             $outputPath = Join-Path "results/weekly-hunting" ($queryName -replace '\.kql', '.csv')
-            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath
+            ./scripts/run-mde-query.ps1 -Query $query -OutputFile $outputPath -UseCredentials -TenantId $env:MDE_TENANT_ID -ClientId $env:MDE_CLIENT_ID -ClientSecret $env:MDE_CLIENT_SECRET
             
             # Process results
             $results = Import-Csv -Path $outputPath -ErrorAction SilentlyContinue
