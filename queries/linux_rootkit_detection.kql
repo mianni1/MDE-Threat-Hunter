@@ -15,6 +15,7 @@ let timeWindow = ago(7d);
 
 DeviceProcessEvents
 | where Timestamp > timeWindow
+| where DeviceProcessEvents.Timestamp > timeWindow
 | where FileName in~ (
     "insmod", 
     "modprobe", 
