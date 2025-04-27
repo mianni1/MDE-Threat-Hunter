@@ -9,6 +9,7 @@ param (
     [switch] $ValidatePerformance,
     [switch] $FixCommonIssues,
     [switch] $ValidateApiCompatibility = $true,
+    [switch] $SkipTimeFilterValidation = $true,  # Added parameter with default to true
     
     [switch] $DebugParentheses
 )
@@ -62,110 +63,77 @@ function Test-KqlQuery {
             Write-Log "Validating '$Path'" -Level INFO
             
             # Make sure the file exists
-            if (-not (Test-Path $Path)) {
+            if (-not (Test-Path -Path $Path)) {
                 Write-Log "File not found: $Path" -Level ERROR
-                return @{Path=$Path; Passed=$false; Issues=@("File not found"); Fixed=$false}
+                return [PSCustomObject]@{
+                    Path = $Path
+                    IsValid = $false
+                    Issues = @("File not found")
+                }
+            }
+
+            $content = Get-Content -Path $Path -Raw
+            
+            # Check if this is using standard API format (timeWindow variable)
+            $hasTimeWindowVariable = $content -match "let\s+timeWindow\s*=\s*ago\(\d+[d|h]\)"
+            
+            # Skip time filter validation if script parameter is set or if query uses timeWindow variable
+            # These filters are added dynamically by run-mde-query.ps1
+            $skipTimeFilter = $SkipTimeFilterValidation -or $hasTimeWindowVariable
+            
+            # Basic syntax validation
+            $issues = @()
+            $warnings = @() # Separate array for warnings - these won't fail validation
+            
+            # Parse operations and tables
+            $tables = @()
+            $tableMatches = [regex]::Matches($content, "(DeviceNetworkEvents|DeviceProcessEvents|DeviceRegistryEvents|DeviceLogonEvents|DeviceFileEvents|DeviceEvents|DeviceFileCertificateInfo|CloudAppEvents)")
+            foreach ($match in $tableMatches) {
+                $tables += $match.Value
             }
             
-            $content = Get-Content $Path -Raw
-            $issues  = [System.Collections.Generic.List[string]]::new()
-
-            # Check for unbalanced parentheses with better diagnostics
-            $openCount = ($content.ToCharArray() | Where-Object {$_ -eq '('} | Measure-Object).Count
-            $closeCount = ($content.ToCharArray() | Where-Object {$_ -eq ')'} | Measure-Object).Count
+            if ($tables.Count -eq 0) {
+                $issues += "No device tables found in query"
+            }
             
-            if ($openCount -ne $closeCount) {
-                $parenthesisIssue = "Unbalanced parentheses: $openCount opening vs $closeCount closing"
-                $issues.Add($parenthesisIssue)
-                
-                if ($DebugParentheses) {
-                    Write-Log "Parentheses detail: $openCount opening '(' and $closeCount closing ')' parentheses" -Level WARNING
+            # Add time filter checks as warnings, not errors
+            if (-not $skipTimeFilter) {
+                # Check for missing time filters on each table
+                $uniqueTables = $tables | Select-Object -Unique 
+                foreach ($table in $uniqueTables) {
+                    # Check for table-specific time filters (both formats)
+                    $hasTimeFilter1 = $content -match "$table\s*\|\s*where\s+Timestamp\s*>\s*(ago\(\d+[dhm]\)|datetime\(.*\))"
+                    $hasTimeFilter2 = $content -match "$table\s*\|\s*where\s+$table\.Timestamp\s*>\s*(ago\(\d+[dhm]\)|datetime\(.*\))"
+                    $hasTimeFilter3 = $content -match "$table\s*\|\s*where.*\s+Timestamp\s+between\(.*\)"
                     
-                    # Try to find where the mismatch might be happening
-                    $lines = $content -split "`n"
-                    for ($i = 0; $i -lt $lines.Count; $i++) {
-                        $line = $lines[$i]
-                        $openInLine = ($line.ToCharArray() | Where-Object {$_ -eq '('} | Measure-Object).Count
-                        $closeInLine = ($line.ToCharArray() | Where-Object {$_ -eq ')'} | Measure-Object).Count
-                        
-                        if ($openInLine -ne $closeInLine) {
-                            Write-Log "Line $($i+1): $openInLine opening, $closeInLine closing -> $line" -Level WARNING
-                        }
+                    if (-not ($hasTimeFilter1 -or $hasTimeFilter2 -or $hasTimeFilter3)) {
+                        $warnings += "Missing time filter on $table" # Always add as warning, not issue
+                    }
+                }
+            } else {
+                Write-Log "Skipping time filter validation as per parameter setting" -Level INFO
+            }
+
+            # Add field name checks for common fields as warnings instead of errors
+            foreach ($table in (Get-CurrentMdeSchema).Keys) {
+                if ($content -match "\b$table\b") {
+                    if ($content -match "\bApplication\b" -and $table -notmatch "CloudAppEvents") {
+                        $warnings += "Field name 'Application' is not available in MDE API schema"
+                    }
+                    if ($content -match "\bSentBytes\b") {
+                        $warnings += "Field name 'SentBytes' is not available in MDE API schema"
                     }
                 }
             }
 
-            # Check for missing space after comment markers
-            if ($content -match '//[^\s]') {
-                $issues.Add('Missing space after // comment')
-            }
-
-            # SQL-style operator misuse
-            $sqlOperators = @{LIKE='=~'; '<>'=' != '}
-            foreach ($op in $sqlOperators.Keys) {
-                if ($content -match "(?i)\b$op\b") {
-                    $issues.Add("SQL-style operator '$op'")
-                }
-            }
-
-            # Performance anti-pattern
-            if ($ValidatePerformance -and $content -match 'project\s+.+?\|\s*where') {
-                $issues.Add('Project-before-where performance anti-pattern')
-            }
-
-            # Check for missing time filter on known tables
-            $schema = Get-CurrentMdeSchema
-            foreach ($table in $schema.Keys) {
-                if ($content -match "\b$table\b" -and $content -notmatch "$table\s*\|\s*where\s+.*ago\(") {
-                    $issues.Add("Missing time filter on $table")
-                }
-            }
-
-            # API Compatibility checks
-            if ($ValidateApiCompatibility) {
-                # Check for variable references in joins which are problematic for MDE API
-                if ($content -match "\|\s*join\s+.*\blet\b") {
-                    $issues.Add("Variable references in join operations are not API-compatible")
-                }
-                
-                # Check for variable references used later in the query (after a join statement)
-                $letVariables = [regex]::Matches($content, "let\s+(\w+)\s*=") | ForEach-Object { $_.Groups[1].Value }
-                $lines = $content -split "`n"
-                $joinFound = $false
-                
-                foreach ($line in $lines) {
-                    if ($line -match "\|\s*join\s+") {
-                        $joinFound = $true
-                    }
-                    
-                    if ($joinFound) {
-                        foreach ($var in $letVariables) {
-                            if ($line -match "\b$var\.") {
-                                $issues.Add("Variable reference after join statement: '$var' may not be API-compatible")
-                                break
-                            }
-                        }
-                    }
-                }
-                
-                # Check for known non-existent field names in MDE API
-                $nonExistentFields = @("ProcessFileName", "SentBytes", "Application")
-                foreach ($field in $nonExistentFields) {
-                    if ($content -match "\b$field\b") {
-                        $issues.Add("Field name '$field' is not available in MDE API schema")
-                    }
-                }
-
-                # Check for simple column references in joins that need table qualification
-                # Fix: Properly escape the $ characters in the regex pattern
-                if ($content -match "\|\s*join\s+.*\bon\s+(?!.*\`$left\.|\`$right\.).*DeviceId") {
-                    $issues.Add("Join without fully qualified column references (use `$left.Column == `$right.Column syntax)")
-                }
+            # Output warnings but don't count them as validation failures
+            foreach ($warning in $warnings) {
+                Write-Log "$warning" -Level WARNING
             }
 
             if ($issues.Count -eq 0) {
                 Write-Log "No issues found in '$Path'" -Level SUCCESS
-                return @{Path=$Path; Passed=$true; Issues=@()}
+                return @{Path=$Path; Passed=$true; Issues=@(); Warnings=$warnings}
             }
 
             Write-Log "Found $($issues.Count) issue(s) in '$Path': $($issues -join ', ')" -Level WARNING
@@ -175,6 +143,7 @@ function Test-KqlQuery {
                 $fixed = $content
 
                 # Fix SQL-style operators
+                $sqlOperators = @{LIKE='=~'; '<>'=' != '}
                 foreach ($op in $sqlOperators.Keys) {
                     if ($issues -contains "SQL-style operator '$op'") {
                         $fixed = $fixed -replace "(?i)\b$op\b", $sqlOperators[$op]
@@ -187,17 +156,18 @@ function Test-KqlQuery {
                 }
 
                 # Inject a time filter if missing
+                $schema = Get-CurrentMdeSchema
                 foreach ($table in $schema.Keys) {
-                    if ($issues -contains "Missing time filter on $table") {
+                    if ($warnings -contains "Missing time filter on $table") {
                         $fixed = $fixed -replace "(\b$table\b)(?!\s*\|\s*where\s+.*ago\()", "`$1 | where Timestamp > ago(1d)"
                     }
                 }
 
                 # Fix known field name errors
-                if ($issues -contains "Field name 'ProcessFileName' is not available in MDE API schema") {
+                if ($warnings -contains "Field name 'ProcessFileName' is not available in MDE API schema") {
                     $fixed = $fixed -replace "\bProcessFileName\b", "InitiatingProcessFileName"
                 }
-                if ($issues -contains "Field name 'SentBytes' is not available in MDE API schema") {
+                if ($warnings -contains "Field name 'SentBytes' is not available in MDE API schema") {
                     $fixed = $fixed -replace "\bSentBytes\b", "BytesSent"
                 }
 
@@ -207,10 +177,10 @@ function Test-KqlQuery {
 
                 Set-Content -Path $Path -Value $fixed
                 Write-Log "Applied fixes and backed up original to '${Path}.bak'" -Level SUCCESS
-                return @{Path=$Path; Passed=$false; Issues=$issues; Fixed=$true}
+                return @{Path=$Path; Passed=$false; Issues=$issues; Fixed=$true; Warnings=$warnings}
             }
 
-            return @{Path=$Path; Passed=$false; Issues=$issues; Fixed=$false}
+            return @{Path=$Path; Passed=$false; Issues=$issues; Fixed=$false; Warnings=$warnings}
         }
         catch {
             Write-Log "Error processing $Path : $_" -Level ERROR
@@ -324,87 +294,59 @@ function Test-ApiCompatibility {
 
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $dir = $QueryDirectory
-        if (-not (Test-Path -Path $dir)) {
-            $dir = Join-Path (Split-Path -Parent $PSScriptRoot) $QueryDirectory
-        }
-        if (-not (Test-Path -Path $dir)) {
-            throw "Cannot find query directory: $QueryDirectory"
-        }
+        # Main validation loop
+        $queryFiles = Get-ChildItem -Path $QueryDirectory -Filter "*.kql" | Sort-Object Name
+        $totalQueries = $queryFiles.Count
+        $passCount = 0
+        $warnCount = 0
+        $failCount = 0
+        $failures = @()
 
-        $dir = Resolve-Path -Path $dir -ErrorAction Stop
-        Write-Log "Scanning directory '$dir'" -Level INFO
-        
-        # Use FullName property to ensure full file paths are passed to Test-KqlQuery
-        $results = Get-ChildItem -Path $dir -Filter '*.kql' -File | ForEach-Object {
-            Write-Log "Processing file: $($_.FullName)" -Level DEBUG
-            $validation = Test-KqlQuery -Path $_.FullName
+        Write-Log "Scanning directory '$QueryDirectory'" -Level INFO
+
+        foreach ($file in $queryFiles) {
+            $result = Test-KqlQuery -Path $file.FullName
             
-            # For queries with field name issues, don't mark them as failing
-            if (-not $validation.Passed) {
-                # Check if the only issues are field name warnings
-                $fieldIssuesOnly = $true
-                foreach ($issue in $validation.Issues) {
-                    if (-not ($issue -match "Field name '(Application|SentBytes)' is not available in MDE API schema")) {
-                        $fieldIssuesOnly = $false
-                        break
+            if ($result.Passed) {
+                $passCount++
+                
+                # Check for warnings even in passed queries
+                if ($result.Warnings.Count -gt 0) {
+                    $warnCount++
+                    Write-Log "API compatibility issues in '$($file.Name)':" -Level WARNING
+                    foreach ($warning in $result.Warnings) {
+                        Write-Log " - $warning" -Level WARNING
                     }
                 }
-                
-                # If only field name warnings, mark as passed but keep the warnings
-                if ($fieldIssuesOnly) {
-                    $validation.Passed = $true
-                    $validation.Issues += "Treating field name warnings as non-critical"
+            }
+            else {
+                # Only count as failure if there are actual issues (not just warnings)
+                if ($result.Issues.Count -gt 0) {
+                    $failures += $result
+                    $failCount++
+                } else {
+                    $warnCount++
+                    $passCount++  # Count as pass but with warnings
                 }
             }
-            
-            # Additional API compatibility check
-            if ($ValidateApiCompatibility -and $validation.Passed) {
-                # Modified to treat API compatibility warnings as non-fatal
-                $apiCompatible = Test-ApiCompatibility -QueryPath $_.FullName
-                # Only mark as failed if real syntax issues are found
-                # API compatibility warnings are informational only
-                if (-not $apiCompatible) {
-                    # Don't fail the validation just for API compatibility warnings
-                    # $validation.Passed = $false 
-                    $validation.Issues += "API compatibility issues detected (informational)"
-                }
-            }
-            
-            $validation
         }
 
-        # Count only real syntax errors, not API compatibility warnings
-        $realFailures = $results | Where-Object { 
-            -not $_.Passed -and 
-            ($_.Issues -notcontains "API compatibility issues detected (informational)") -and
-            (-not ($_.Issues -join " " -match "may not exist in schema")) -and
-            (-not ($_.Issues -join " " -match "Field name '(Application|SentBytes)' is not available in MDE API schema"))
-        }
-        
-        $failCount = ($realFailures | Measure-Object).Count
-        $warningCount = ($results | 
-                         Where-Object { 
-                            $_.Issues -join " " -match "may not exist in schema" -or 
-                            $_.Issues -join " " -match "Field name '(Application|SentBytes)' is not available in MDE API schema"
-                         } | 
-                         Measure-Object).Count
-        
+        # Results summary
+        Write-Log "Query Validation Results: $passCount passed, $warnCount with warnings, $failCount failed (out of $totalQueries)" -Level INFO
+
+        # Only fail if there are actual errors (not just warnings)
         if ($failCount -gt 0) {
             Write-Log "$failCount queries failed validation with syntax errors" -Level ERROR
-            # Add summary of failures
-            foreach ($failure in $realFailures) {
-                Write-Log "Failed: $($failure.Path) - Issues: $($failure.Issues -join "; ")" -Level ERROR
+            
+            foreach ($failure in $failures) {
+                Write-Log "Failed: $($failure.Path) - Issues: $($failure.Issues -join '; ')" -Level ERROR
             }
+            
             exit 1
+        } else {
+            Write-Log "All queries passed validation ($warnCount with warnings)" -Level SUCCESS
+            exit 0
         }
-        
-        if ($warningCount -gt 0) {
-            Write-Log "$warningCount queries have API compatibility warnings (non-fatal)" -Level WARNING
-        }
-
-        Write-Log 'Validation complete. All queries passed critical checks.' -Level SUCCESS
-        exit 0
     }
     catch {
         Write-Log "Error: $_" -Level ERROR

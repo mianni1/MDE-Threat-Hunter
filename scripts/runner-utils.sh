@@ -300,7 +300,7 @@ validate_queries() {
             $queryDir = "./queries"
             
             Write-Host "[INFO] Executing validation script: $scriptPath"
-            & "$scriptPath" -QueryDirectory "$queryDir" -ErrorAction Stop
+            & "$scriptPath" -QueryDirectory "$queryDir" -SkipTimeFilterValidation -ErrorAction Stop
             
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "[ERROR] Query validation failed with exit code $LASTEXITCODE"

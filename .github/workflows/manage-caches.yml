@@ -37,8 +37,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
       
-      # Install GitHub CLI - Added to fix the "gh: command not found" error
-      - name: Install GitHub CLI
+      # Install GitHub CLI and set proper environment
+      - name: Install GitHub CLI and prepare environment
         shell: bash
         run: |
           # Check if gh is already installed
@@ -54,6 +54,37 @@ jobs:
             echo "GitHub CLI is already installed"
             gh --version
           fi
+          
+          # Ensure we're in a git repository with proper configuration
+          git config --global init.defaultBranch main
+          if [ ! -d .git ]; then
+            git init
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+          fi
+          
+          # Verify GitHub authentication
+          echo "Verifying GitHub authentication..."
+          gh auth status
+      
+      # Setup GitHub CLI authentication
+      - name: Setup GitHub CLI authentication
+        shell: bash
+        run: |
+          # Create GitHub CLI config directory if it doesn't exist
+          mkdir -p ~/.config/gh
+          
+          # Configure GitHub CLI to use token authentication
+          echo "github.com:" > ~/.config/gh/hosts.yml
+          echo "  oauth_token: ${{ github.token }}" >> ~/.config/gh/hosts.yml
+          echo "  user: github-actions[bot]" >> ~/.config/gh/hosts.yml
+          echo "  git_protocol: https" >> ~/.config/gh/hosts.yml
+          
+          # Verify authentication is working
+          gh auth status
+          
+          # Install GitHub CLI cache extension if needed
+          gh extension install actions/gh-actions-cache 2>/dev/null || true
       
       # List all caches
       - name: List current caches
@@ -215,7 +246,7 @@ jobs:
             echo "Deleting outdated caches:" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             for CACHE_ID in $CACHES_TO_DELETE; do
-              gh actions-cache delete --key $CACHE_ID --confirm
+              gh actions-cache delete $CACHE_ID --confirm
               echo "Deleted cache: $CACHE_ID" >> $GITHUB_STEP_SUMMARY
             done
             echo '```' >> $GITHUB_STEP_SUMMARY
@@ -242,7 +273,7 @@ jobs:
             echo "Deleting all caches:" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             for CACHE_ID in $CACHE_IDS; do
-              gh actions-cache delete --key $CACHE_ID --confirm
+              gh actions-cache delete $CACHE_ID --confirm
               echo "Deleted cache: $CACHE_ID" >> $GITHUB_STEP_SUMMARY
             done
             echo '```' >> $GITHUB_STEP_SUMMARY
