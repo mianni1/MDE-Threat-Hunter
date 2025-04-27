@@ -10,9 +10,11 @@
 // Investigate the process execution context, isolate affected systems if malicious activity is confirmed, and review security policies for script execution.
 // END_DESCRIPTION
 
-// API-compatible version (replaced variable with direct time filter)
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
 DeviceProcessEvents
-| where Timestamp > ago(7d)
+| where Timestamp > timeWindow
 | where InitiatingProcessCommandLine has_any(
     "osascript -e", 
     "curl", 

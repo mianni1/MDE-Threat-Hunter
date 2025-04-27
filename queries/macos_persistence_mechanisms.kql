@@ -10,9 +10,11 @@
 // Review the identified plist files for legitimacy, verify publisher signatures, remove unauthorised launch agents/daemons, and investigate the process that created them.
 // END_DESCRIPTION
 
-// API-compatible version - using aliases and project to manage columns
-DeviceFileCertificateInfo as DFCI
-| where Timestamp > ago(24h)
+// API-compatible version with time-filtered tables for validation
+let timeWindow = ago(24h);
+
+DeviceFileCertificateInfo 
+| where Timestamp > timeWindow
 | where FileName endswith ".plist"
 | where FolderPath has_any (
     "/Library/LaunchAgents/",
@@ -29,8 +31,8 @@ DeviceFileCertificateInfo as DFCI
     SignatureStatus,
     SHA256
 | join kind=inner (
-    DeviceFileEvents as DFE
-    | where Timestamp > ago(24h)
+    DeviceFileEvents 
+    | where Timestamp > timeWindow
     | where ActionType in ("FileCreated", "FileModified")
     | where FileName endswith ".plist"
     | project 

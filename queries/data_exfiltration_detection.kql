@@ -10,9 +10,11 @@
 // Investigate the process initiating the connection and the destination IP, quarantine affected systems, and block further communication with suspicious destinations.
 // END_DESCRIPTION
 
-// API-compatible query - using correct field names and avoiding variables
+// API-compatible query with standardized time filter
+let timeWindow = ago(24h);
+
 DeviceNetworkEvents
-| where Timestamp > ago(24h)
+| where Timestamp > timeWindow
 | where ActionType == "ConnectionSuccess"
 | where not(ipv4_is_private(RemoteIP))
 // Exclude common legitimate processes
@@ -32,7 +34,7 @@ DeviceNetworkEvents
 | where isnull(KnownRemoteIPs) or not(set_has_element(KnownRemoteIPs, RemoteIP))
 | extend GeoInfo = geo_info_from_ip_address(RemoteIP)
 | extend Country = tostring(parse_json(GeoInfo).country)
-| extend DataSentKB = coalesce(SentBytes, 0) / 1024  // Using SentBytes instead and handling null values
+| extend DataSentKB = coalesce(BytesSent, 0) / 1024  // Changed from SentBytes to BytesSent for API compatibility
 | where DataSentKB > 500
 | project
     Timestamp,

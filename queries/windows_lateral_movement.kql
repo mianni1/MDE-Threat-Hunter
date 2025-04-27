@@ -10,9 +10,11 @@
 // Investigate the source and destination systems, validate if the administrative access was authorised, review the account's recent activity, and consider implementing network segmentation.
 // END_DESCRIPTION
 
-// Convert to an API-compatible query with inline subqueries
-DeviceLogonEvents as DLE
-| where Timestamp > ago(24h)
+// API-compatible query with time-filtered tables for validation
+let timeWindow = ago(24h);
+
+DeviceLogonEvents
+| where Timestamp > timeWindow
 | where ActionType == "LogonSuccess"
 | where LogonType in (3, 10)  // Type 3 = Network, Type 10 = RemoteInteractive
 | where IsLocalAdmin == true
@@ -22,7 +24,7 @@ DeviceLogonEvents as DLE
 // Join with network connection events
 | join kind=inner (
     DeviceNetworkEvents
-    | where Timestamp > ago(24h)
+    | where Timestamp > timeWindow
     | where ActionType == "ConnectionSuccess"
     | where RemotePort in (22, 23, 135, 139, 445, 593, 3389, 5985, 5986)
 ) on DeviceId

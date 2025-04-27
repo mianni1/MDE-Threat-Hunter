@@ -10,8 +10,11 @@
 // Investigate the process execution context, command line arguments, and user account. Consider implementing application control policies.
 // END_DESCRIPTION
 
+// API-compatible query with standardized time filter
+let timeWindow = ago(1d);
+
 DeviceProcessEvents
-| where Timestamp > ago(1d)
+| where Timestamp > timeWindow
 | where FileName in~ (
     "certutil.exe", "regsvr32.exe", "rundll32.exe", "msiexec.exe",
     "mshta.exe", "msdt.exe", "odbcconf.exe", "regasm.exe", 

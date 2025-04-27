@@ -8,8 +8,11 @@
 // Validate whether these changes were authorised. Roll back any unauthorised changes and review associated user activity.
 // END_DESCRIPTION
 
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
 DeviceEvents
-| where Timestamp > ago(7d)
+| where Timestamp > timeWindow
 | where ActionType in~ ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")
 | extend ParsedFields = iff(isnotempty(AdditionalFields), parse_json(AdditionalFields), dynamic({}))
 | extend GroupName = tostring(ParsedFields.GroupName)

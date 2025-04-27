@@ -200,6 +200,8 @@ jobs:
       - name: Delete old caches
         if: steps.check_cleanup.outputs.cleanup_needed == 'true'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "Cleaning up caches..." >> $GITHUB_STEP_SUMMARY
           
@@ -225,6 +227,8 @@ jobs:
       - name: Delete all caches on key update
         if: steps.check_key_update.outputs.key_update_needed == 'true'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "Invalidating all caches due to key update..." >> $GITHUB_STEP_SUMMARY
           

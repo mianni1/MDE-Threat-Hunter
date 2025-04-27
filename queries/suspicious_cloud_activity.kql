@@ -10,8 +10,11 @@
 // Reset compromised account credentials, review and remove suspicious mail forwarding rules, lock suspicious IP addresses, and consider implementing additional cloud security controls.
 // END_DESCRIPTION
 
+// API-compatible query with standardized time filter
+let timeWindow = ago(1d);
+
 CloudAppEvents
-| where Timestamp > ago(1d)
+| where Timestamp > timeWindow
 | where ActionType in~ (
     "FileDownloaded", 
     "FileDownloadedByUnknownIPAddress", 

@@ -10,9 +10,11 @@
 // Isolate the affected system, investigate the specific kernel module activity, verify module authenticity, and consider a clean OS reinstallation if a rootkit is confirmed.
 // END_DESCRIPTION
 
-// API-compatible version (removed variable declaration)
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
 DeviceProcessEvents
-| where Timestamp > ago(7d)
+| where Timestamp > timeWindow
 | where FileName in~ (
     "insmod", 
     "modprobe", 

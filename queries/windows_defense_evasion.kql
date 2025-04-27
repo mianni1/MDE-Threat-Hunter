@@ -10,9 +10,11 @@
 // Verify integrity of security tools, review disabled services, and investigate suspicious registry modifications.
 // END_DESCRIPTION
 
-// API-compatible version (replaced variable with direct time filter)
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
 DeviceProcessEvents
-| where Timestamp > ago(7d)
+| where Timestamp > timeWindow
 | where ProcessCommandLine has_any(
     "sc stop WinDefend",
     "sc config WinDefend start=disabled",

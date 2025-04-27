@@ -10,14 +10,16 @@
 // Investigate the unusual logon activity, verify with the user if it was legitimate, consider forcing a password reset, and implement multi-factor authentication if not already in place.
 // END_DESCRIPTION
 
-// API-compatible query with no separate variable declarations
+// API-compatible query with standard time filter format
+let timeWindow = ago(1d);
+
 DeviceLogonEvents
-| where Timestamp > ago(1d)
+| where Timestamp > timeWindow
 | where ActionType in ("LogonSuccess", "LogonFailed")
 | extend CurrentHour = datetime_part("hour", Timestamp)
 | extend IsWeekend = dayofweek(Timestamp) == 0 or dayofweek(Timestamp) == 6
 | extend IsAfterHours = CurrentHour < 6 or CurrentHour > 18
-// Join with historical data using a subquery instead of a variable
+// Join with historical data using a subquery
 | join kind=leftouter (
     DeviceLogonEvents
     | where Timestamp between (ago(30d) .. ago(1d))

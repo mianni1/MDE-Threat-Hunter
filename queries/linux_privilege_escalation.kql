@@ -10,9 +10,11 @@
 // Investigate the context of the command execution, verify if it was authorised administrative activity, check for newly created SUID binaries, and review user privilege changes.
 // END_DESCRIPTION
 
-// API-compatible version (removed variable declaration)
+// API-compatible query with standardized time filter
+let timeWindow = ago(7d);
+
 DeviceProcessEvents
-| where Timestamp > ago(7d)
+| where Timestamp > timeWindow
 | where FileName in~ (
     "sudo", 
     "su", 

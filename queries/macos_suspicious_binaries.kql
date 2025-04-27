@@ -10,9 +10,11 @@
 // Investigate identified binaries, check reputation through threat intelligence sources, remove malicious files, and determine the initial infection vector.
 // END_DESCRIPTION
 
-// API-compatible query with aliases and proper column handling
-DeviceFileEvents as DFE
-| where Timestamp > ago(24h)
+// API-compatible query with time-filtered tables for validation
+let timeWindow = ago(24h);
+
+DeviceFileEvents 
+| where Timestamp > timeWindow
 | where FileName endswith ".app" or FileName endswith ".bin" or FileName endswith ".sh"
 | project 
     DFE_Timestamp=Timestamp,
@@ -24,8 +26,8 @@ DeviceFileEvents as DFE
     InitiatingProcessAccountName,
     InitiatingProcessCommandLine
 | join kind=leftouter (
-    DeviceFileCertificateInfo as DFCI
-    | where Timestamp > ago(24h)
+    DeviceFileCertificateInfo
+    | where Timestamp > timeWindow
     | project 
         DeviceId,
         DFCI_FileName=FileName,
