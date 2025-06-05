@@ -53,11 +53,15 @@ function Test-KqlQuery {
         $content = Get-Content $Path -Raw
         $issues  = [System.Collections.Generic.List[string]]::new()
 
-        if ($content -match 'let\s+\w+\s*=.+?[^;]\s*let') { $issues.Add('Missing semicolons between let statements') }
+        if ($content -match '(?ms)let\s+\w+\s*=[^;\r\n]+\r?\n\s*let') {
+            $issues.Add('Missing semicolons between let statements')
+        }
         if (($content.ToCharArray() | Where-Object {$_ -eq '('}).Count -ne ($content.ToCharArray() | Where-Object {$_ -eq ')'}).Count) {
             $issues.Add('Unbalanced parentheses')
         }
-        if ($content -match '//[^ ]') { $issues.Add('Missing space after // comment') }
+        if ($content -match '//(?!\s)') {
+            $issues.Add('Missing space after // comment')
+        }
 
         $sqlOperators = @{LIKE='=~'; '<>'=' != '}
         foreach ($op in $sqlOperators.Keys) {
@@ -87,7 +91,10 @@ function Test-KqlQuery {
             if ($PSCmdlet.ShouldProcess($Path, 'Fix issues')) {
                 $fixed = $content
                 if ($issues -contains 'Missing semicolons between let statements') {
-                    $fixed = $fixed -replace '(let\s+\w+\s*=.+?)(?<!;)(?=\s*let)','`$1;'
+                    $fixed = [regex]::Replace($fixed,'(?ms)(let\s+\w+\s*=[^;\r\n]+)(\r?\n\s*let)','$1;$2')
+                }
+                if ($issues -contains 'Missing space after // comment') {
+                    $fixed = $fixed -replace '//(\S)','// $1'
                 }
                 foreach ($op in $sqlOperators.Keys) {
                     if ($issues -contains "SQL-style operator '$op'") {
