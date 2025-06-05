@@ -1,9 +1,8 @@
-union DeviceRegistryEvents, DeviceProcessEvents
-| where DeviceRegistryEvents.Timestamp > ago(24h)
+DeviceRegistryEvents
+| where Timestamp > ago(24h)
 // Removed OSPlatform filter and relying on Windows-specific registry paths instead
-| where (
-    DeviceRegistryEvents.RegistryKey has_any(
-        "\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
+| where RegistryKey has_any(
+        "\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
         "\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
         "\\Software\\Microsoft\\Windows\\CurrentVersion\\RunEx",
         "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run",
@@ -14,13 +13,19 @@ union DeviceRegistryEvents, DeviceProcessEvents
         "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders",
         "\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders"
     )
-    or 
-    DeviceProcessEvents.FolderPath has_any(
+| project Timestamp, DeviceName, ActionType, RegistryKey, RegistryValueName, RegistryValueData,
+  ProcessId, FileName, FolderPath, InitiatingProcessFileName, InitiatingProcessCommandLine
+| union (
+    DeviceProcessEvents
+    | where Timestamp > ago(24h)
+    | where FolderPath has_any(
         "\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
         "\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
     )
+    // DeviceProcessEvents lacks registry columns so add empty placeholders for union compatibility
+    | extend RegistryKey="", RegistryValueName="", RegistryValueData=""
+    | project Timestamp, DeviceName, ActionType, RegistryKey, RegistryValueName, RegistryValueData,
+      ProcessId, FileName, FolderPath, InitiatingProcessFileName, InitiatingProcessCommandLine
 )
-| project Timestamp, DeviceName, ActionType, RegistryKey, RegistryValueName, RegistryValueData, 
-  ProcessId, FileName, FolderPath, InitiatingProcessFileName, InitiatingProcessCommandLine
 | extend AlertDetails = strcat("Potential persistence mechanism detected on device: ", DeviceName)
 | sort by Timestamp desc

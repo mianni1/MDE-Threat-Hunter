@@ -1,5 +1,5 @@
 // Detect unusual logon patterns including first-time access and unusual hours
-let lookback_days = 30;
+let lookback_days = 30d;
 let recent_window = 1d;
 let known_patterns = (
     DeviceLogonEvents
