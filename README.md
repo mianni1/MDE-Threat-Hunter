@@ -34,3 +34,7 @@ The system operates through a few interconnected workflows:
 2. **Daily Security Monitoring** (daily): Runs standard security monitoring across all endpoints
 3. **Weekly Comprehensive Threat Hunting** (weekly): Deep analysis with extended lookback periods
 4. **Runner Health Checks** (twice daily): Ensures self-hosted runners are operational
+
+## License
+
+Licensed under the MIT License.
