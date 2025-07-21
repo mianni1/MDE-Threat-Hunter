@@ -23,7 +23,19 @@ param(
     [switch]$ValidateQuery,
     
     [Parameter(Mandatory=$false)]
-    [string]$LookbackHours
+    [string]$LookbackHours,
+
+    [Parameter(Mandatory=$false)]
+    [string]$TenantId = $env:MDE_TENANT_ID,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ClientId = $env:MDE_CLIENT_ID,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ClientSecret = $env:MDE_CLIENT_SECRET,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ApiUrl = $env:MDE_API_URL
 )
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12, [Net.SecurityProtocolType]::Tls13
@@ -89,6 +101,28 @@ function Validate-QuerySyntax {
     }
 }
 
+function Get-MdeAccessToken {
+    param(
+        [Parameter(Mandatory=$true)] [string]$TenantId,
+        [Parameter(Mandatory=$true)] [string]$ClientId,
+        [Parameter(Mandatory=$true)] [string]$ClientSecret
+    )
+    try {
+        $body = @{ 
+            client_id     = $ClientId
+            scope         = 'https://api.security.microsoft.com/.default'
+            client_secret = $ClientSecret
+            grant_type    = 'client_credentials'
+        }
+        $tokenResponse = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body $body -ContentType 'application/x-www-form-urlencoded'
+        return $tokenResponse.access_token
+    }
+    catch {
+        Write-Log "Failed to acquire access token: $_" -Level ERROR
+        throw
+    }
+}
+
 function Execute-Query {
     param (
         [Parameter(Mandatory=$true)]
@@ -124,41 +158,31 @@ function Execute-Query {
         }
         
         Write-Log "Executing MDE query" -Level INFO
-        
+
         $results = @()
         $retryCount = 0
         $success = $false
-        
+
         while (-not $success -and $retryCount -lt $MaxRetries) {
             try {
-                Write-Log "Simulating MDE query execution attempt $($retryCount + 1)..."
-                
-                Start-Sleep -Seconds 2
-                
-                $results = @(
-                    [PSCustomObject]@{
-                        Timestamp = Get-Date
-                        DeviceId = "12345678-1234-1234-1234-123456789012"
-                        DeviceName = "DEVICE001"
-                        ActionType = "ProcessCreated"
-                        FileName = "example.exe"
-                    },
-                    [PSCustomObject]@{
-                        Timestamp = Get-Date
-                        DeviceId = "87654321-8765-8765-8765-987654321098"
-                        DeviceName = "DEVICE002"
-                        ActionType = "FileCreated"
-                        FileName = "data.txt"
-                    }
-                )
-                
-                $success = $true
+                if (-not $TenantId -or -not $ClientId -or -not $ClientSecret) {
+                    throw 'API credentials not provided'
+                }
+
+                $token   = Get-MdeAccessToken -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret
+                $headers = @{ Authorization = "Bearer $token" }
+                $body    = @{ Query = $QueryText } | ConvertTo-Json
+                $uri     = if ($ApiUrl) { $ApiUrl } else { 'https://api.security.microsoft.com/api/advancedhunting/run' }
+
+                $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $body -ContentType 'application/json'
+                $results  = $response.Results
+                $success  = $true
                 Write-Log "Query executed successfully." -Level INFO
             }
             catch {
                 $retryCount++
                 Write-Log "Query execution attempt $retryCount failed: $_" -Level WARNING
-                
+
                 if ($retryCount -lt $MaxRetries) {
                     Write-Log "Retrying in $RetryDelaySeconds seconds..." -Level INFO
                     Start-Sleep -Seconds $RetryDelaySeconds
@@ -220,9 +244,21 @@ function Execute-QueryDirectory {
     param (
         [Parameter(Mandatory=$true)]
         [string]$DirectoryPath,
-        
+
         [Parameter(Mandatory=$true)]
-        [string]$OutputDirectory
+        [string]$OutputDirectory,
+
+        [Parameter(Mandatory=$false)]
+        [string]$TenantId,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ClientId,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ClientSecret,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ApiUrl
     )
     
     try {
@@ -262,7 +298,7 @@ function Execute-QueryDirectory {
             }
             
             try {
-                $count = Execute-Query -QueryText $queryContent -OutputFilePath $outputFile
+            $count = Execute-Query -QueryText $queryContent -OutputFilePath $outputFile -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret -ApiUrl $ApiUrl
             } catch {
                 Write-Log "Warning: Query execution failed for $($queryName): $_" -Level WARNING
                 # ensure an empty output file exists
@@ -301,7 +337,7 @@ function Execute-QueryDirectory {
 try {
     if ($QueryDirectory) {
         Write-Log "Running in directory mode with directory: $QueryDirectory" -Level INFO
-        $directoryResults = Execute-QueryDirectory -DirectoryPath $QueryDirectory -OutputDirectory $OutputFile
+        $directoryResults = Execute-QueryDirectory -DirectoryPath $QueryDirectory -OutputDirectory $OutputFile -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret -ApiUrl $ApiUrl
         
         if (-not $directoryResults) {
             Write-Log "Directory execution failed" -Level ERROR
@@ -328,7 +364,7 @@ try {
         }
         
         try {
-            $count = Execute-Query -QueryText $queryContent -OutputFilePath $OutputFile
+            $count = Execute-Query -QueryText $queryContent -OutputFilePath $OutputFile -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret -ApiUrl $ApiUrl
         } catch {
             Write-Log "Warning: Query execution failed for $($QueryFile): $_" -Level WARNING
             # ensure an empty output file
@@ -356,7 +392,7 @@ try {
         }
         
         try {
-            $count = Execute-Query -QueryText $Query -OutputFilePath $OutputFile
+            $count = Execute-Query -QueryText $Query -OutputFilePath $OutputFile -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret -ApiUrl $ApiUrl
         } catch {
             Write-Log "Warning: Direct query execution failed: $_" -Level WARNING
             "" | Out-File -FilePath $OutputFile -Force
