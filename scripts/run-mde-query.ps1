@@ -127,9 +127,21 @@ function Execute-Query {
     param (
         [Parameter(Mandatory=$true)]
         [string]$QueryText,
-        
+
         [Parameter(Mandatory=$true)]
-        [string]$OutputFilePath
+        [string]$OutputFilePath,
+
+        [Parameter(Mandatory=$false)]
+        [string]$TenantId,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ClientId,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ClientSecret,
+
+        [Parameter(Mandatory=$false)]
+        [string]$ApiUrl
     )
     
     try {
