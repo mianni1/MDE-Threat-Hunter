@@ -15,7 +15,6 @@ let timeWindow = ago(24h);
 
 DeviceFileCertificateInfo 
 | where Timestamp > timeWindow
-| where DeviceFileCertificateInfo.Timestamp > timeWindow
 | where FileName endswith ".plist"
 | where FolderPath has_any (
     "/Library/LaunchAgents/",
@@ -34,7 +33,6 @@ DeviceFileCertificateInfo
 | join kind=inner (
     DeviceFileEvents 
     | where Timestamp > timeWindow
-    | where DeviceFileEvents.Timestamp > timeWindow
     | where ActionType in ("FileCreated", "FileModified")
     | where FileName endswith ".plist"
     | project 

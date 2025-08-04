@@ -15,7 +15,6 @@ let timeWindow = ago(7d);
 
 DeviceProcessEvents
 | where Timestamp > timeWindow
-| where DeviceProcessEvents.Timestamp > timeWindow
 | where FileName in~ ("powershell.exe", "pwsh.exe", "powershell_ise.exe")
 | extend CommandLine = ProcessCommandLine
 | extend EncodedCommand = extract(@"(?i)-[eE][ncodema]*\s+([A-Za-z0-9+/=]+)", 1, CommandLine)

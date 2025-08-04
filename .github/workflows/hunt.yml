@@ -128,19 +128,19 @@ jobs:
                 
                 # Determine severity
                 $level = "warning"
-                $severity = "medium"
+                $severity = "6.0"
                 if ($queryName -match '(credential|ransomware|privilege|lateral_movement|defense_evasion)') {
                   $level = "error"
-                  $severity = "high"
+                  $severity = "8.0"
                 } elseif ($queryName -match '(malware|rootkit)') {
                   $level = "error" 
-                  $severity = "high"
+                  $severity = "8.0"
                 } elseif ($queryName -match '(suspicious|anomalous)') {
                   $level = "warning"
-                  $severity = "medium"
+                  $severity = "6.0"
                 } else {
                   $level = "note"
-                  $severity = "low"
+                  $severity = "4.0"
                 }
                 
                 # Create rule definition
@@ -180,6 +180,23 @@ jobs:
                       }
                       region = @{
                         startLine = 1
+                        startColumn = 1
+                      }
+                    }
+                  })
+                  properties = @{
+                    findingCount = $results.Count
+                    queryName = $queryName
+                    lookbackPeriod = $lookback
+                    severity = $severity
+                  }
+                }
+                
+                $ruleIndex++
+              }
+            } catch {
+              Write-Warning "Failed $($_.Name): $_"
+            }
                         startColumn = 1
                       }
                     }

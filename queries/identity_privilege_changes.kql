@@ -13,7 +13,6 @@ let timeWindow = ago(7d);
 
 DeviceEvents
 | where Timestamp > timeWindow
-| where DeviceEvents.Timestamp > timeWindow
 | where ActionType in~ ("UserAccountCreated", "UserAccountAddedToLocalGroup", "UserAccountAddedToGroup")
 | extend ParsedFields = iff(isnotempty(AdditionalFields), parse_json(AdditionalFields), dynamic({}))
 | extend GroupName = tostring(ParsedFields.GroupName)

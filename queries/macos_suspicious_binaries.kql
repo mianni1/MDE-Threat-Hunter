@@ -15,7 +15,6 @@ let timeWindow = ago(24h);
 
 DeviceFileEvents 
 | where Timestamp > timeWindow
-| where DeviceFileEvents.Timestamp > timeWindow
 | where FileName endswith ".app" or FileName endswith ".bin" or FileName endswith ".sh"
 | project 
     DFE_Timestamp=Timestamp,
@@ -29,7 +28,6 @@ DeviceFileEvents
 | join kind=leftouter (
     DeviceFileCertificateInfo
     | where Timestamp > timeWindow
-    | where DeviceFileCertificateInfo.Timestamp > timeWindow
     | project 
         DeviceId,
         DFCI_FileName=FileName,
