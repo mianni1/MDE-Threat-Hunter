@@ -34,7 +34,7 @@ DeviceNetworkEvents
 | where isnull(KnownRemoteIPs) or not(set_has_element(KnownRemoteIPs, RemoteIP))
 | extend GeoInfo = geo_info_from_ip_address(RemoteIP)
 | extend Country = tostring(parse_json(GeoInfo).country)
-| extend DataSentKB = coalesce(TotalBytes, RemoteIPTotalBytes, 0) / 1024  // Use available byte fields
+| extend DataSentKB = coalesce(LocalIPTotalBytes, RemoteIPTotalBytes, 0) / 1024  // Use available byte fields
 | where DataSentKB > 500
 | project
     Timestamp,

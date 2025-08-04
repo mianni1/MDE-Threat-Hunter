@@ -109,16 +109,6 @@ jobs:
             $queryName = $_.BaseName
             $query = Get-Content $_.FullName -Raw
             
-            # Add time filter
-            if ($query -notmatch 'ago\(' -and $query -match '(DeviceProcessEvents|DeviceNetworkEvents|DeviceLogonEvents|DeviceFileEvents|DeviceRegistryEvents)') {
-              $table = [regex]::Match($query, '(DeviceProcessEvents|DeviceNetworkEvents|DeviceLogonEvents|DeviceFileEvents|DeviceRegistryEvents)').Value
-              if ($query -match 'where') {
-                $query = $query -replace 'where', "where $table.Timestamp > ago($lookback) and "
-              } else {
-                $query = $query -replace $table, "$table | where Timestamp > ago($lookback)"
-              }
-            }
-            
             try {
               $body = @{ Query = $query } | ConvertTo-Json
               $results = (Invoke-RestMethod -Method Post -Uri 'https://api.security.microsoft.com/api/advancedhunting/run' -Headers $headers -Body $body -ContentType 'application/json').Results
