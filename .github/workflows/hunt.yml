@@ -2,7 +2,7 @@ name: MDE Hunt
 
 on:
   push:
-    branches: [staging]
+    branches: [main]
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:

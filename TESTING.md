@@ -35,7 +35,7 @@ Results:
 
 ### 2. GitHub Actions Testing
 
-The workflow will automatically trigger when you push to `staging` branch (just happened!).
+The workflow will automatically trigger when you push to `main` branch (just happened!).
 
 **Check the workflow run:**
 1. Go to: https://github.com/mianni1/MDE-Threat-Hunter/actions
@@ -94,7 +94,7 @@ OP_SERVICE_ACCOUNT_TOKEN_READ = your-1password-service-account-token
 **Trigger workflow manually:**
 ```bash
 # If you have GitHub CLI and are authenticated:
-gh workflow run hunt.yml --ref staging
+gh workflow run hunt.yml --ref main
 
 # Or use the GitHub web interface:
 # Go to Actions → MDE Hunt → Run workflow
