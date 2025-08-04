@@ -1,0 +1,22 @@
+name: Test Workflow
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Test basic setup
+        shell: pwsh
+        run: |
+          Write-Host "Testing PowerShell environment..."
+          Get-ChildItem queries -Filter "*.kql" | ForEach-Object {
+            Write-Host "Found query: $($_.Name)"
+          }
+          Write-Host "Test completed successfully!"
